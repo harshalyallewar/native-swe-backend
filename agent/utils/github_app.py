@@ -28,15 +28,24 @@ def _generate_app_jwt() -> str:
     return jwt.encode(payload, private_key, algorithm="RS256")
 
 
+_cached_token: str | None = None
+_cached_token_expires_at: float = 0
+
+
 async def get_github_app_installation_token() -> str | None:
     """Exchange the GitHub App JWT for an installation access token.
 
     Returns:
         Installation access token string, or None if unavailable.
     """
+    global _cached_token, _cached_token_expires_at
+
     if not GITHUB_APP_ID or not GITHUB_APP_PRIVATE_KEY or not GITHUB_APP_INSTALLATION_ID:
         logger.debug("GitHub App env vars not fully configured, skipping app token")
         return None
+
+    if _cached_token and time.time() < _cached_token_expires_at:
+        return _cached_token
 
     try:
         app_jwt = _generate_app_jwt()
@@ -50,7 +59,11 @@ async def get_github_app_installation_token() -> str | None:
                 },
             )
             response.raise_for_status()
-            return response.json().get("token")
+            token = response.json().get("token")
+            if token:
+                _cached_token = token
+                _cached_token_expires_at = time.time() + 50 * 60  # Cache for 50 mins
+            return token
     except Exception:
         logger.exception("Failed to get GitHub App installation token")
         return None

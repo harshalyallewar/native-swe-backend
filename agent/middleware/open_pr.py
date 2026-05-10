@@ -42,6 +42,7 @@ from ..utils.github_app import get_github_app_installation_token
 from ..utils.github_token import get_github_token
 from ..utils.sandbox_paths import aresolve_repo_dir
 from ..utils.sandbox_state import get_sandbox_backend
+import shlex
 
 logger = logging.getLogger(__name__)
 
@@ -84,8 +85,8 @@ async def open_pr_if_needed(
         pr_payload = _extract_pr_params_from_messages(messages)
 
         if not pr_payload:
-            logger.info("No commit_and_open_pr tool call found, skipping PR creation")
-            return None
+            logger.info("No commit_and_open_pr tool call found, but proceeding to check for uncommitted changes.")
+            pr_payload = {}
 
         if pr_payload.get("success"):
             return None
@@ -120,6 +121,13 @@ async def open_pr_if_needed(
         if not sandbox_backend or not repo_name:
             return None
         repo_dir = await aresolve_repo_dir(sandbox_backend, repo_name)
+
+        check_repo = await asyncio.to_thread(
+            sandbox_backend.execute, f"test -d {shlex.quote(repo_dir)}/.git"
+        )
+        if check_repo.exit_code != 0:
+            logger.info("Repository directory not found or not a git repository at %s, skipping PR safety net.", repo_dir)
+            return None
 
         has_uncommitted_changes = await asyncio.to_thread(
             git_has_uncommitted_changes, sandbox_backend, repo_dir

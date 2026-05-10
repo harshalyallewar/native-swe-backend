@@ -8,6 +8,7 @@ sequence so the call succeeds instead of burning an LLM turn on a retry.
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from collections.abc import Awaitable, Callable
@@ -51,6 +52,21 @@ def _sanitize_read_file_args(args: dict) -> dict:
     return sanitized
 
 
+def _sanitize_write_todos_args(args: dict) -> dict:
+    """Parse 'todos' string as JSON if the LLM provided a string instead of a list."""
+    sanitized = dict(args)
+    todos = sanitized.get("todos")
+    if isinstance(todos, str):
+        try:
+            parsed = json.loads(todos)
+            if isinstance(parsed, list):
+                logger.warning("Coercing write_todos.todos from string to list")
+                sanitized["todos"] = parsed
+        except json.JSONDecodeError:
+            pass
+    return sanitized
+
+
 class SanitizeToolInputsMiddleware(AgentMiddleware):
     """Intercept read_file calls and coerce malformed integer parameters.
 
@@ -64,12 +80,22 @@ class SanitizeToolInputsMiddleware(AgentMiddleware):
 
     def _sanitize_request(self, request: ToolCallRequest) -> ToolCallRequest:
         tool_call = request.tool_call
-        if not isinstance(tool_call, dict) or tool_call.get("name") != "read_file":
+        if not isinstance(tool_call, dict):
             return request
+            
+        name = tool_call.get("name")
         args = tool_call.get("args", {})
-        sanitized_args = _sanitize_read_file_args(args)
-        if sanitized_args is args:
+        
+        if name == "read_file":
+            sanitized_args = _sanitize_read_file_args(args)
+        elif name == "write_todos":
+            sanitized_args = _sanitize_write_todos_args(args)
+        else:
             return request
+
+        if sanitized_args == args:
+            return request
+            
         new_tool_call = {**tool_call, "args": sanitized_args}
         return request.override(tool_call=new_tool_call)
 

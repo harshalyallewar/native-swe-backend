@@ -50,8 +50,9 @@ def check_if_no_op(messages: list[AnyMessage]) -> bool:
 @after_model
 def ensure_no_empty_msg(state: AgentState, runtime: Runtime) -> dict[str, Any] | None:
     last_msg = state["messages"][-1]
-    has_contents = bool(last_msg.text())
+    has_contents = bool(last_msg.content)
     has_tool_calls = bool(last_msg.tool_calls)
+    print("has_contents", has_contents, "has_tool_calls", has_tool_calls)
     if not has_tool_calls and not has_contents:
         messages_since_last_human = get_every_message_since_last_human(state)
         if check_if_no_op(messages_since_last_human):
@@ -68,6 +69,7 @@ def ensure_no_empty_msg(state: AgentState, runtime: Runtime) -> dict[str, Any] |
             content="No operation performed."
             + "Please continue with the task, ensuring you ALWAYS call at least one tool in"
             + " every message unless you are absolutely sure the task has been fully completed.",
+            name="no_op",
             tool_call_id=tc_id,
         )
 

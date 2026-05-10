@@ -3,6 +3,16 @@ import os
 from deepagents.backends import LocalShellBackend
 
 
+class PersistentLocalShellBackend(LocalShellBackend):
+    def __init__(self, sandbox_id: str | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self._sandbox_id = sandbox_id or super().id
+
+    @property
+    def id(self) -> str:
+        return self._sandbox_id
+
+
 def create_local_sandbox(sandbox_id: str | None = None):
     """Create a local shell sandbox with no isolation.
 
@@ -13,14 +23,15 @@ def create_local_sandbox(sandbox_id: str | None = None):
     overridden via the LOCAL_SANDBOX_ROOT_DIR environment variable.
 
     Args:
-        sandbox_id: Ignored for local sandboxes; accepted for interface compatibility.
+        sandbox_id: Optional existing sandbox ID to preserve identity across reconnects.
 
     Returns:
         LocalShellBackend instance implementing SandboxBackendProtocol.
     """
     root_dir = os.getenv("LOCAL_SANDBOX_ROOT_DIR", os.getcwd())
 
-    return LocalShellBackend(
+    return PersistentLocalShellBackend(
+        sandbox_id=sandbox_id,
         root_dir=root_dir,
         inherit_env=True,
     )

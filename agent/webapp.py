@@ -984,6 +984,7 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks) ->
             logger.info("Ignoring unsupported GitHub issue action: %s", action)
             return {"status": "ignored", "reason": f"Unsupported GitHub issue action: {action}"}
         if action == "edited":
+            
             changes = payload.get("changes", {})
             if not any(field in changes for field in ("body", "title")):
                 logger.info("Ignoring GitHub issue edit without title/body changes")

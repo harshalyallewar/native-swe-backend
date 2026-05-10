@@ -385,7 +385,7 @@ Make sure ngrok is still running from step 2, then start the LangGraph server in
 ```bash
 uv run langgraph dev --no-browser
 ```
-
+<!-- .\.venv\Scripts\Activate.ps1 -->
 The server runs on `http://localhost:2024` with these endpoints:
 
 | Endpoint | Purpose |

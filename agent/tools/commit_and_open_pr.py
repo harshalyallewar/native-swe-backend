@@ -30,6 +30,7 @@ from ..utils.github_app import get_github_app_installation_token
 from ..utils.github_token import get_github_token
 from ..utils.sandbox_paths import resolve_repo_dir
 from ..utils.sandbox_state import get_sandbox_backend_sync
+import shlex
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +169,16 @@ def commit_and_open_pr(
             }
 
         repo_dir = resolve_repo_dir(sandbox_backend, repo_name)
+        
+        check_repo = sandbox_backend.execute(f"test -d {shlex.quote(repo_dir)}/.git")
+        if check_repo.exit_code != 0:
+            return {
+                "success": False,
+                "error": f"fatal: Repository not found at {repo_dir}. The directory does not exist or is not a git repository. You must clone the repository before calling this tool.",
+                "pr_url": None,
+                "fatal": True,
+            }
+
         github_token = get_github_token()
         user_identity = resolve_triggering_user_identity(config, github_token)
         pr_body = add_pr_collaboration_note(body, user_identity)

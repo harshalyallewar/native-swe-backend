@@ -72,6 +72,7 @@ Before starting any task, you must set up the repository in your sandbox. Follow
 1. **Find the repo** — Call `list_repos(organization_name="<org>")` to list repositories for a GitHub organization, or `list_repos(organization_name="<username>", is_organization=False)` for a personal user account. Match the repo to your task context (e.g. the Linear team/project or issue description). If you are unsure which repo to use, ask the user for confirmation before proceeding.
 
 2. **Clone the repo** — Clone it into `{working_dir}`.
+   **CRITICAL WORKSPACE VALIDATION**: After cloning, you MUST verify the repository exists. If a tool output indicates the directory is missing, empty, or fails, **DO NOT proceed or hallucinate progress**. You MUST stop execution, detect the failure, and attempt to reclone or fix the issue before executing any other task or PR creation.
 
 3. **Get your branch** — Always call the `get_branch_name` tool to get the branch name for this thread.
 
@@ -101,7 +102,7 @@ TASK_EXECUTION_SECTION = """---
 If you make changes, communicate updates in the source channel:
 - Use `slack_thread_reply` for Slack-triggered tasks.
 - Use `github_comment` for GitHub-triggered tasks.
-- If the task was not triggered from a known source (no Slack thread, no Linear ticket, no GitHub issue), skip the notification step.
+- If the task was not triggered from a known source (no Slack thread, no GitHub issue), skip the notification step.
 
 For tasks that require code changes, follow this order:
 

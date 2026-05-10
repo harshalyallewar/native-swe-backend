@@ -28,6 +28,7 @@ from langsmith.sandbox import SandboxClientError
 
 from .integrations.langsmith import _configure_github_proxy
 from .middleware import (
+    ExecutionStateMiddleware,
     SanitizeToolInputsMiddleware,
     ToolErrorMiddleware,
     check_message_queue_before_model,
@@ -143,12 +144,14 @@ async def check_or_recreate_sandbox(
 
     Returns the original backend if healthy, or a new one if recreated.
     """
+    print("check_or_recreate_sandbox with thread id", thread_id)
     try:
         await asyncio.to_thread(sandbox_backend.execute, "echo ok")
-    except SandboxClientError:
+    except Exception as e:
         logger.warning(
-            "Cached sandbox is no longer reachable for thread %s, recreating",
+            "Cached sandbox is no longer reachable for thread %s, recreating (error: %s)",
             thread_id,
+            e,
         )
         sandbox_backend = await _recreate_sandbox(thread_id)
     return sandbox_backend
@@ -309,6 +312,7 @@ async def get_agent(config: RunnableConfig) -> Pregel:
         ],
         backend=sandbox_backend,
         middleware=[
+            ExecutionStateMiddleware(),
             SanitizeToolInputsMiddleware(),
             ModelCallLimitMiddleware(run_limit=60, exit_behavior="end"),
             ToolErrorMiddleware(),

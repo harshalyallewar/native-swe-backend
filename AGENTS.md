@@ -20,7 +20,7 @@ uv run pytest -vvv tests/test_open_pr_middleware.py::test_name  # single test
 make lint               # ruff check + ruff format --diff
 make format             # ruff format + ruff check --fix
 ```
-<!-- .\.venv\Scripts\Activate.ps1 -->
+
 `langgraph.json` declares the graph entrypoint as `agent.server:get_agent` and the FastAPI app as `agent.webapp:app`. Both are served together by `langgraph dev`.
 
 ## Architecture
