@@ -53,7 +53,7 @@ create_deep_agent(
 
 Every task runs in its own **isolated cloud sandbox** — a remote Linux environment with full shell access. The repo is cloned in, the agent gets full permissions, and the blast radius of any mistake is fully contained. No production access, no confirmation prompts.
 
-Native-SWE supports multiple sandbox providers out of the box — [Modal](https://modal.com/), [Daytona](https://www.daytona.io/), [Runloop](https://www.runloop.ai/), and [LangSmith](https://smith.langchain.com/) — and you can plug in your own. See the [Customization Guide](CUSTOMIZATION.md#1-sandbox) for details.
+Native-SWE runs tasks in [Daytona](https://www.daytona.io/) workspaces out of the box, and you can plug in your own sandbox provider. See the [Customization Guide](CUSTOMIZATION.md#1-sandbox) for details.
 
 This follows the principle all three companies converge on: **isolate first, then give full permissions inside the boundary.**
 
@@ -118,7 +118,7 @@ This is an area where you can extend Native-SWE for your org: add deterministic 
 | Decision | Native-SWE | Stripe (Minions) | Ramp (Inspect) | Coinbase (Cloudbot) |
 |---|---|---|---|---|
 | **Harness** | Composed (Deep Agents/LangGraph) | Forked (Goose) | Composed (OpenCode) | Built from scratch |
-| **Sandbox** | Pluggable (Modal, Daytona, Runloop, etc.) | AWS EC2 devboxes (pre-warmed) | Modal containers (pre-warmed) | In-house |
+| **Sandbox** | Pluggable (Daytona, etc.) | AWS EC2 devboxes (pre-warmed) | Modal containers (pre-warmed) | In-house |
 | **Tools** | ~15, curated | ~500, curated per-agent | OpenCode SDK + extensions | MCPs + custom Skills |
 | **Context** | AGENTS.md + issue/thread | Rule files + pre-hydration | OpenCode built-in | Linear-first + MCPs |
 | **Orchestration** | Subagents + middleware | Blueprints (deterministic + agentic) | Sessions + child sessions | Three modes |

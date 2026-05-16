@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import shlex
 from typing import Any
 
 from langgraph.config import get_config
@@ -30,7 +31,6 @@ from ..utils.github_app import get_github_app_installation_token
 from ..utils.github_token import get_github_token
 from ..utils.sandbox_paths import resolve_repo_dir
 from ..utils.sandbox_state import get_sandbox_backend_sync
-import shlex
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +169,7 @@ def commit_and_open_pr(
             }
 
         repo_dir = resolve_repo_dir(sandbox_backend, repo_name)
-        
+
         check_repo = sandbox_backend.execute(f"test -d {shlex.quote(repo_dir)}/.git")
         if check_repo.exit_code != 0:
             return {

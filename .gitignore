@@ -69,3 +69,6 @@ __pycache__/
 .eggs/
 
 # 
+# Agent log files
+logs/
+

@@ -1,3 +1,6 @@
+# LEGACY: This middleware is NOT wired into the current LangGraph state-machine
+# architecture. PR creation is now handled by commit_pr_node.
+# Kept for reference only — do not import in new code.
 """After-agent middleware that creates a GitHub PR if needed.
 
 Runs once after the agent finishes as a safety net. If the agent called
@@ -10,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import shlex
 from typing import Any
 
 from langchain.agents.middleware import AgentState, after_agent
@@ -42,7 +46,6 @@ from ..utils.github_app import get_github_app_installation_token
 from ..utils.github_token import get_github_token
 from ..utils.sandbox_paths import aresolve_repo_dir
 from ..utils.sandbox_state import get_sandbox_backend
-import shlex
 
 logger = logging.getLogger(__name__)
 

@@ -3,7 +3,6 @@ from unittest.mock import MagicMock
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from agent.middleware.ensure_no_empty_msg import (
-    check_if_confirming_completion,
     check_if_model_already_called_commit_and_open_pr,
     check_if_model_messaged_user,
     ensure_no_empty_msg,

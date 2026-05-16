@@ -1,9 +1,6 @@
 """Tests for agent.utils.repo."""
 
-import json
-from unittest.mock import AsyncMock, patch
 
-import pytest
 
 from agent.utils.repo import extract_repo_from_text
 

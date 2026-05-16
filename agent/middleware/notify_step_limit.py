@@ -1,3 +1,6 @@
+# LEGACY: This middleware is NOT wired into the current LangGraph state-machine
+# architecture. Step-limit notification is now handled by the notify_node.
+# Kept for reference only — do not import in new code.
 """After-agent middleware that notifies users when the step limit is reached."""
 
 from __future__ import annotations

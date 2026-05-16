@@ -38,9 +38,7 @@ make format             # ruff format + ruff check --fix
 2. Metadata says `__creating__` and no cache → poll until ready (`_wait_for_sandbox_id`).
 3. No sandbox at all → create one, set `__creating__` sentinel, then real id.
 4. Metadata has an id but no cache → reconnect; fall back to recreate on failure.
-
-For `SANDBOX_TYPE=langsmith` (default), every sandbox creation/refresh also calls `_configure_github_proxy` with a fresh GitHub App installation token (`get_github_app_installation_token`). Other providers (modal, daytona, runloop, local) skip the proxy step. Provider is selected via `SANDBOX_TYPE` env var; factory is `agent/utils/sandbox.py:create_sandbox`.
-
+For Daytona, the factory is `agent/utils/sandbox.py:create_sandbox`.
 ### Middleware stack (order matters)
 
 Configured in `get_agent`, runs around every model call:
@@ -56,7 +54,7 @@ All tools live in `agent/tools/` and are flat-imported via `agent/tools/__init__
 
 ### Auth
 
-- **GitHub**: dual-mode. User OAuth tokens are encrypted-at-rest in thread metadata (`agent/encryption.py`, `utils/auth.py:resolve_github_token`). When no user token is available, falls back to a GitHub App installation token (`utils/github_app.py`). The installation token is also what configures the LangSmith sandbox's GitHub proxy.
+- **GitHub**: dual-mode. User OAuth tokens are encrypted-at-rest in thread metadata (`agent/encryption.py`, `utils/auth.py:resolve_github_token`). When no user token is available, falls back to a GitHub App installation token (`utils/github_app.py`).
 - **Webhooks**: GitHub signatures verified in `utils/github_comments.py:verify_github_signature`; Slack/Linear handled in their respective utils.
 
 ### Thread-id derivation

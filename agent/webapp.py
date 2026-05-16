@@ -1,7 +1,6 @@
 """Custom FastAPI routes for LangGraph server."""
 
 import hashlib
-import hmac
 import json
 import logging
 import os
@@ -9,6 +8,10 @@ import uuid
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
+
+from .logging_config import setup_logging
+
+setup_logging()
 
 import httpx
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
@@ -21,7 +24,6 @@ from .utils.auth import (
     persist_encrypted_github_token,
     resolve_github_token_from_email,
 )
-from .utils.comments import get_recent_comments
 from .utils.github_app import get_github_app_installation_token
 from .utils.github_comments import (
     NATIVE_SWE_TAGS,
@@ -469,7 +471,23 @@ async def process_slack_mention(event_data: dict[str, Any], repo_config: dict[st
     await langgraph_client.runs.create(
         thread_id,
         "agent",
-        input={"messages": [{"role": "user", "content": content_blocks}]},
+        input={
+            "messages": [{"role": "user", "content": content_blocks}],
+            "source": "slack",
+            "repo": repo_config,
+            "thread_id": thread_id,
+            "repo_cloned": False,
+            "has_new_instructions": False,
+            "notification_sent": False,
+            "verification_attempts": 0,
+            "current_step": 0,
+            "plan": [],
+            "intent": None,
+            "pr_url": None,
+            "pr_number": None,
+            "files_changed_so_far": [],
+            "fatal_error": None,
+        },
         config={"configurable": configurable, "metadata": _AGENT_VERSION_METADATA},
         if_not_exists="create",
         multitask_strategy="interrupt",
@@ -673,7 +691,23 @@ async def _trigger_or_queue_run(
     await langgraph_client.runs.create(
         thread_id,
         "agent",
-        input={"messages": [{"role": "user", "content": prompt}]},
+        input={
+            "messages": [{"role": "user", "content": prompt}],
+            "source": "github",
+            "repo": repo_config,
+            "thread_id": thread_id,
+            "repo_cloned": False,
+            "has_new_instructions": False,
+            "notification_sent": False,
+            "verification_attempts": 0,
+            "current_step": 0,
+            "plan": [],
+            "intent": None,
+            "pr_url": None,
+            "pr_number": None,
+            "files_changed_so_far": [],
+            "fatal_error": None,
+        },
         config={
             "configurable": {
                 "source": "github",
@@ -681,6 +715,7 @@ async def _trigger_or_queue_run(
                 "github_user_id": github_user_id,
                 "repo": repo_config,
                 "pr_number": pr_number,
+                "thread_id": thread_id,
             },
             "metadata": _AGENT_VERSION_METADATA,
         },
@@ -930,8 +965,25 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
     await langgraph_client.runs.create(
         thread_id,
         "agent",
-        input={"messages": [{"role": "user", "content": prompt}]},
-        config={"configurable": configurable, "metadata": _AGENT_VERSION_METADATA},
+        input={
+            "messages": [{"role": "user", "content": prompt}],
+            "source": "github",
+            "repo": repo_config,
+            "thread_id": thread_id,
+            "repo_cloned": False,
+            "has_new_instructions": False,
+            "notification_sent": False,
+            "verification_attempts": 0,
+            "current_step": 0,
+            "plan": [],
+            "intent": None,
+            "pr_url": None,
+            "pr_number": None,
+            "files_changed_so_far": [],
+            "fatal_error": None,
+        },
+        config={"configurable": {**configurable, "thread_id": thread_id},
+                "metadata": _AGENT_VERSION_METADATA},
         if_not_exists="create",
     )
     logger.info("LangGraph run created for thread %s from GitHub issue", thread_id)
@@ -984,7 +1036,7 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks) ->
             logger.info("Ignoring unsupported GitHub issue action: %s", action)
             return {"status": "ignored", "reason": f"Unsupported GitHub issue action: {action}"}
         if action == "edited":
-            
+
             changes = payload.get("changes", {})
             if not any(field in changes for field in ("body", "title")):
                 logger.info("Ignoring GitHub issue edit without title/body changes")

@@ -1,25 +1,10 @@
 import os
 
 from agent.integrations.daytona import create_daytona_sandbox
-from agent.integrations.langsmith import create_langsmith_sandbox
-from agent.integrations.local import create_local_sandbox
-from agent.integrations.modal import create_modal_sandbox
-from agent.integrations.runloop import create_runloop_sandbox
-
-SANDBOX_FACTORIES = {
-    "langsmith": create_langsmith_sandbox,
-    "daytona": create_daytona_sandbox,
-    "modal": create_modal_sandbox,
-    "runloop": create_runloop_sandbox,
-    "local": create_local_sandbox,
-}
 
 
 def create_sandbox(sandbox_id: str | None = None):
-    """Create or reconnect to a sandbox using the configured provider.
-
-    The provider is selected via the SANDBOX_TYPE environment variable.
-    Supported values: langsmith (default), daytona, modal, runloop, local.
+    """Create or reconnect to a sandbox using Daytona.
 
     Args:
         sandbox_id: Optional existing sandbox ID to reconnect to.
@@ -27,12 +12,7 @@ def create_sandbox(sandbox_id: str | None = None):
     Returns:
         A sandbox backend implementing SandboxBackendProtocol.
     """
-    sandbox_type = os.getenv("SANDBOX_TYPE", "langsmith")
-    factory = SANDBOX_FACTORIES.get(sandbox_type)
-    if not factory:
-        supported = ", ".join(sorted(SANDBOX_FACTORIES))
-        raise ValueError(f"Invalid sandbox type: {sandbox_type}. Supported types: {supported}")
-    return factory(sandbox_id)
+    return create_daytona_sandbox(sandbox_id)
 
 
 def validate_sandbox_startup_config() -> None:
@@ -42,11 +22,5 @@ def validate_sandbox_startup_config() -> None:
     Called from the FastAPI lifespan hook so errors surface at boot rather
     than on the first sandbox creation.
     """
-    sandbox_type = os.getenv("SANDBOX_TYPE", "langsmith")
-    if sandbox_type == "langsmith":
-        from agent.integrations.langsmith import LangSmithProvider
-
-        LangSmithProvider.validate_startup_config()
-    elif sandbox_type == "daytona":
-        if not os.getenv("DAYTONA_API_KEY"):
-            raise ValueError("DAYTONA_API_KEY environment variable is required")
+    if not os.getenv("DAYTONA_API_KEY"):
+        raise ValueError("DAYTONA_API_KEY environment variable is required")

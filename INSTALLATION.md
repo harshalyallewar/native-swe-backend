@@ -104,8 +104,6 @@ After creating the app:
 
 Native-SWE uses [LangSmith](https://smith.langchain.com/) for:
 - **Tracing**: all agent runs are logged for debugging and observability
-- **Sandboxes**: each task runs in an isolated LangSmith cloud sandbox
-
 ### 4a. Get your API key, project and tenant IDs
 
 1. Create a [LangSmith account](https://smith.langchain.com/) if you don't have one
@@ -131,37 +129,21 @@ To set up per-user OAuth:
 5. Leave "Enable PKCE" unchecked.
 6. Save. You'll reference this Provider ID as `GITHUB_OAUTH_PROVIDER_ID` in your environment variables.
 
-### 4c. Sandbox snapshots
+### 4c. Set up Daytona Workspace
 
-LangSmith sandboxes provide the isolated execution environment for each agent run. Native-SWE boots each sandbox from a pre-built **snapshot** — you build the snapshot once (from a Docker image) and then reference it by UUID.
+Native-SWE runs each task in an isolated Daytona workspace. 
 
-Build a snapshot in the LangSmith UI (Sandboxes → Snapshots → New), or via the SDK:
-
-```python
-from langsmith.sandbox import SandboxClient
-
-client = SandboxClient(api_key="<your key>")
-snapshot = client.create_snapshot(
-    name="native-swe",
-    docker_image="bracelangchain/deepagents-sandbox:v1",  # built from ./Dockerfile
-    fs_capacity_bytes=32 * 1024**3,
-)
-print(snapshot.id)
-```
-
-Then set the resulting UUID in your environment:
+Set your Daytona API key in your environment:
 
 ```bash
-DEFAULT_SANDBOX_SNAPSHOT_ID="<snapshot-uuid>"
-# Optional; overrides the snapshot's root FS size at sandbox boot. Default is 32 GiB.
-DEFAULT_SANDBOX_SNAPSHOT_FS_CAPACITY_BYTES="34359738368"
-# Optional; number of vCPUs per sandbox. Default is 4.
-DEFAULT_SANDBOX_VCPUS="4"
-# Optional; memory in bytes per sandbox. Default is 15 GiB.
-DEFAULT_SANDBOX_MEM_BYTES="16106127360"
+DAYTONA_API_KEY="<your key>"
 ```
 
-`DEFAULT_SANDBOX_SNAPSHOT_ID` is required when `SANDBOX_TYPE=langsmith`. The server validates this at startup and refuses to boot if it's missing.
+You can optionally specify a custom Daytona snapshot:
+
+```bash
+DAYTONA_SANDBOX_SNAPSHOT="daytonaio/sandbox:0.6.0"
+```
 
 ## 5. Set up triggers
 
@@ -368,11 +350,9 @@ SLACK_SIGNING_SECRET=""
 # === Exa (optional — enables web search tool) ===
 EXA_API_KEY=""                         # From https://dashboard.exa.ai
 
-# === Sandbox (optional) ===
-DEFAULT_SANDBOX_SNAPSHOT_ID=""         # Required when SANDBOX_TYPE=langsmith (see step 4c)
-DEFAULT_SANDBOX_SNAPSHOT_FS_CAPACITY_BYTES=""  # Root FS size in bytes (default: 32 GiB)
-DEFAULT_SANDBOX_VCPUS=""               # vCPUs per sandbox (default: 4)
-DEFAULT_SANDBOX_MEM_BYTES=""           # Memory in bytes per sandbox (default: 15 GiB)
+# === Sandbox ===
+DAYTONA_API_KEY=""                     # Required for Daytona workspaces
+DAYTONA_SANDBOX_SNAPSHOT=""            # Optional, default: daytonaio/sandbox:0.6.0
 
 # === Token Encryption ===
 TOKEN_ENCRYPTION_KEY=""                # Generate with: openssl rand -base64 32
@@ -464,11 +444,8 @@ The `langgraph.json` at the project root already defines the graph entry point a
 
 ### Sandbox creation failures
 
-- Verify `LANGSMITH_API_KEY_PROD` is set and valid
-- Check LangSmith sandbox quotas in your workspace settings
-- If the server refuses to start with `DEFAULT_SANDBOX_SNAPSHOT_ID must be set`, build a snapshot (see step 4c) and export its UUID
-- If you see `Failed to create sandbox from snapshot '<id>'`, confirm the snapshot exists in your workspace and has status `ready`
-- If you get a 403 Forbidden error on the sandbox endpoints, your LangSmith workspace may not have sandbox access enabled — contact LangSmith support
+- Verify `DAYTONA_API_KEY` is set and valid
+- Check your Daytona quotas and access.
 
 ### Agent not responding to comments
 

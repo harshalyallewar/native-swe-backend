@@ -27,69 +27,21 @@ return create_deep_agent(
 
 ## 1. Sandbox
 
-By default, Native-SWE runs each task in a [LangSmith cloud sandbox](https://docs.smith.langchain.com/) — an isolated Linux environment where the agent clones the repo and executes commands. Sandbox creation and connection is handled in `agent/integrations/langsmith.py`.
+Native-SWE runs each task in a Daytona workspace — an isolated environment where the agent clones the repo and executes commands. Sandbox creation and connection is handled in `agent/integrations/daytona.py`.
 
 ### Using a custom sandbox snapshot
 
-Build a snapshot in LangSmith (UI or `SandboxClient.create_snapshot`) from your Docker image and point Native-SWE at its UUID:
+Daytona uses a predefined snapshot by default, but you can override it:
 
 ```bash
-DEFAULT_SANDBOX_SNAPSHOT_ID="<snapshot-uuid>"                      # Required
-DEFAULT_SANDBOX_SNAPSHOT_FS_CAPACITY_BYTES="34359738368"           # Optional, default 32 GiB
-DEFAULT_SANDBOX_VCPUS="4"                                          # Optional, default 4
-DEFAULT_SANDBOX_MEM_BYTES="16106127360"                            # Optional, default 15 GiB
+DAYTONA_SANDBOX_SNAPSHOT="daytonaio/sandbox:0.6.0"           # Optional, defaults to this
 ```
 
 This is useful for pre-installing languages, frameworks, or internal tools that your repos depend on — reducing setup time per agent run.
 
-### Using a different sandbox provider
-
-Set the `SANDBOX_TYPE` environment variable to switch providers. Each provider has a corresponding integration file in `agent/integrations/` and a factory function registered in `agent/utils/sandbox.py`:
-
-| `SANDBOX_TYPE` | Integration file | Required env vars |
-|---|---|---|
-| `langsmith` (default) | `agent/integrations/langsmith.py` | `LANGSMITH_API_KEY_PROD`, `SANDBOX_TYPE="langsmith"` |
-| `daytona` | `agent/integrations/daytona.py` | `DAYTONA_API_KEY`, `SANDBOX_TYPE="daytona"`, optional `DAYTONA_SANDBOX_SNAPSHOT` |
-| `runloop` | `agent/integrations/runloop.py` | `RUNLOOP_API_KEY`, `SANDBOX_TYPE="runloop"` |
-| `modal` | `agent/integrations/modal.py` | Modal credentials, `SANDBOX_TYPE="modal"` |
-| `local` | `agent/integrations/local.py` | None (no isolation — development only), `SANDBOX_TYPE="local"` |
-
-> **Warning**: `local` runs commands directly on your host with no sandboxing. Only use for local development with human-in-the-loop enabled.
-
-### Adding a new sandbox provider
-
-1. **Create an integration file** at `agent/integrations/my_provider.py` with a factory function matching this signature:
-
-```python
-def create_my_provider_sandbox(sandbox_id: str | None = None):
-    """Create or reconnect to a sandbox.
-
-    Args:
-        sandbox_id: Optional existing sandbox ID to reconnect to.
-            If None, creates a new sandbox.
-
-    Returns:
-        An object implementing SandboxBackendProtocol.
-    """
-    ...
-```
-
-2. **Register it** in `agent/utils/sandbox.py` by importing your factory and adding it to `SANDBOX_FACTORIES`:
-
-```python
-from agent.integrations.my_provider import create_my_provider_sandbox
-
-SANDBOX_FACTORIES = {
-    ...
-    "my_provider": create_my_provider_sandbox,
-}
-```
-
-The factory must return an object implementing `SandboxBackendProtocol` from `deepagents`. See the existing integration files for reference.
-
 ### Building a custom sandbox provider
 
-If none of the built-in providers fit, you can build your own. The agent accepts any backend that implements `SandboxBackendProtocol` from `deepagents`. The protocol requires:
+If Daytona does not fit, you can build your own. The agent accepts any backend that implements `SandboxBackendProtocol` from `deepagents`. The protocol requires:
 
 - **File operations**: `ls()`, `read()`, `write()`, `edit()`, `glob()`, `grep()`
 - **Shell execution**: `execute(command, timeout=None) -> ExecuteResponse`
@@ -118,7 +70,7 @@ class MySandbox(BaseSandbox):
         )
 ```
 
-See `deepagents.backends.LangSmithSandbox` and `agent/integrations/langsmith.py` for a full reference implementation.
+See `deepagents.backends.DaytonaSandbox` and `agent/integrations/daytona.py` for a full reference implementation.
 
 ---
 

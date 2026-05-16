@@ -1,3 +1,6 @@
+# LEGACY: This middleware is NOT wired into the current LangGraph state-machine
+# architecture. Its responsibilities are now handled by graph nodes (verify_node,
+# commit_pr_node). Kept for reference only — do not import in new code.
 from typing import Any
 from uuid import uuid4
 

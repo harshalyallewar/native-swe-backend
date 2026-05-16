@@ -82,10 +82,10 @@ class SanitizeToolInputsMiddleware(AgentMiddleware):
         tool_call = request.tool_call
         if not isinstance(tool_call, dict):
             return request
-            
+
         name = tool_call.get("name")
         args = tool_call.get("args", {})
-        
+
         if name == "read_file":
             sanitized_args = _sanitize_read_file_args(args)
         elif name == "write_todos":
@@ -95,7 +95,7 @@ class SanitizeToolInputsMiddleware(AgentMiddleware):
 
         if sanitized_args == args:
             return request
-            
+
         new_tool_call = {**tool_call, "args": sanitized_args}
         return request.override(tool_call=new_tool_call)
 
