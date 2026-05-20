@@ -31,13 +31,14 @@ def make_model(model_id: str, **kwargs: Unpack[ModelKwargs]):
 
         # Configure max_tokens, temperature according to project
         temp = model_kwargs.get("temperature", 0.2)
-        max_tokens = model_kwargs.get("max_tokens", 2048)
+        max_tokens = model_kwargs.get("max_tokens", 4096)
+        
+        # Cap at 4096 since NVIDIA NIM endpoints generally reject max_tokens > 4096
+        if max_tokens and max_tokens > 4096:
+            max_tokens = 4096
 
         return ChatNVIDIA(
-            model=nvidia_model,
-            api_key=api_key,
-            temperature=temp,
-            max_tokens=max_tokens
+            model=nvidia_model, api_key=api_key, temperature=temp, max_tokens=max_tokens
         )
 
     if model_id.startswith("openai:"):

@@ -1,7 +1,5 @@
 """Tests for agent.utils.repo."""
 
-
-
 from agent.utils.repo import extract_repo_from_text
 
 
@@ -49,5 +47,3 @@ class TestExtractRepoFromText:
     def test_trailing_slash_stripped(self) -> None:
         result = extract_repo_from_text("repo:my-org/my-repo/")
         assert result == {"owner": "my-org", "name": "my-repo"}
-
-

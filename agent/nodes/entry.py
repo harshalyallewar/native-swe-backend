@@ -1,4 +1,5 @@
 """Entry node: validate config, resolve GitHub token, ensure sandbox exists."""
+
 from __future__ import annotations
 
 import asyncio
@@ -38,9 +39,7 @@ async def _check_or_recreate_sandbox(sandbox_backend: Any, thread_id: str) -> An
         await asyncio.to_thread(sandbox_backend.execute, "echo ok")
         return sandbox_backend
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Cached sandbox unreachable for thread %s, recreating: %s", thread_id, exc
-        )
+        logger.warning("Cached sandbox unreachable for thread %s, recreating: %s", thread_id, exc)
         SANDBOX_BACKENDS.pop(thread_id, None)
         await _client.threads.update(
             thread_id=thread_id,
@@ -50,9 +49,7 @@ async def _check_or_recreate_sandbox(sandbox_backend: Any, thread_id: str) -> An
             new_backend = await asyncio.to_thread(create_sandbox)
         except Exception:
             logger.exception("Failed to recreate sandbox")
-            await _client.threads.update(
-                thread_id=thread_id, metadata={"sandbox_id": None}
-            )
+            await _client.threads.update(thread_id=thread_id, metadata={"sandbox_id": None})
             raise
         return new_backend
 
@@ -111,18 +108,14 @@ async def entry_node(state: dict, config: RunnableConfig) -> dict:
                 sandbox_backend = await asyncio.to_thread(create_sandbox)
             except Exception:
                 logger.exception("Failed to create sandbox")
-                await _client.threads.update(
-                    thread_id=thread_id, metadata={"sandbox_id": None}
-                )
+                await _client.threads.update(thread_id=thread_id, metadata={"sandbox_id": None})
                 raise
         else:
             logger.info("Connecting to existing sandbox %s", sandbox_id)
             try:
                 sandbox_backend = await asyncio.to_thread(create_sandbox, sandbox_id)
             except Exception:
-                logger.warning(
-                    "Failed to connect to existing sandbox %s, creating new", sandbox_id
-                )
+                logger.warning("Failed to connect to existing sandbox %s, creating new", sandbox_id)
                 await _client.threads.update(
                     thread_id=thread_id, metadata={"sandbox_id": SANDBOX_CREATING}
                 )
@@ -130,9 +123,7 @@ async def entry_node(state: dict, config: RunnableConfig) -> dict:
                     sandbox_backend = await asyncio.to_thread(create_sandbox)
                 except Exception:
                     logger.exception("Failed to create replacement sandbox")
-                    await _client.threads.update(
-                        thread_id=thread_id, metadata={"sandbox_id": None}
-                    )
+                    await _client.threads.update(thread_id=thread_id, metadata={"sandbox_id": None})
                     raise
             sandbox_backend = await _check_or_recreate_sandbox(sandbox_backend, thread_id)
     except Exception as exc:  # noqa: BLE001

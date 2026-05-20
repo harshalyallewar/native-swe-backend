@@ -1,4 +1,5 @@
 """Setup repo node: clone repo, checkout branch, read AGENTS.md. Pure Python."""
+
 from __future__ import annotations
 
 import asyncio
@@ -79,11 +80,23 @@ async def setup_repo_node(state: dict, config: RunnableConfig) -> dict:
     safe_repo_dir = shlex.quote(repo_dir)
 
     # Determine branch name
-    branch_name = (
-        config.get("metadata", {}).get("branch_name")
-        if isinstance(config.get("metadata"), dict)
-        else None
-    )
+    from langgraph_sdk import get_client as _get_client
+
+    async def _get_branch_from_thread(tid: str) -> str | None:
+        try:
+            _client = _get_client()
+            thread = await _client.threads.get(tid)
+            return (thread.get("metadata") or {}).get("branch_name")
+        except Exception:
+            return None
+
+    branch_name = await _get_branch_from_thread(thread_id)
+    if not branch_name:
+        branch_name = (
+            config.get("metadata", {}).get("branch_name")
+            if isinstance(config.get("metadata"), dict)
+            else None
+        )
     if not branch_name:
         try:
             branch_name = await get_github_default_branch(owner, name, github_token)
@@ -92,9 +105,7 @@ async def setup_repo_node(state: dict, config: RunnableConfig) -> dict:
             branch_name = "main"
 
     # Check if repo already cloned
-    check_result = await asyncio.to_thread(
-        sandbox.execute, f"test -d {safe_repo_dir}/.git"
-    )
+    check_result = await asyncio.to_thread(sandbox.execute, f"test -d {safe_repo_dir}/.git")
 
     if check_result.exit_code == 0:
         # Already cloned — fetch latest
@@ -104,14 +115,10 @@ async def setup_repo_node(state: dict, config: RunnableConfig) -> dict:
             f"cd {safe_repo_dir} && git fetch origin 2>&1",
         )
         if fetch_result.exit_code != 0:
-            logger.warning(
-                "git fetch failed (continuing anyway): %s", fetch_result.output
-            )
+            logger.warning("git fetch failed (continuing anyway): %s", fetch_result.output)
     else:
         # Fresh clone
-        clone_url = (
-            f"https://x-access-token:{github_token}@github.com/{owner}/{name}.git"
-        )
+        clone_url = f"https://x-access-token:{github_token}@github.com/{owner}/{name}.git"
         safe_clone_url = shlex.quote(clone_url)
         clone_cmd = f"git clone {safe_clone_url} {safe_repo_dir} 2>&1"
         logger.info("Cloning %s/%s into %s", owner, name, repo_dir)
@@ -139,8 +146,7 @@ async def setup_repo_node(state: dict, config: RunnableConfig) -> dict:
         if create_result.exit_code != 0:
             return {
                 "fatal_error": (
-                    f"git checkout failed for branch {branch_name}: "
-                    f"{create_result.output}"
+                    f"git checkout failed for branch {branch_name}: {create_result.output}"
                 ),
                 "error_stage": "setup_repo",
                 "repo_cloned": False,
@@ -158,13 +164,9 @@ async def setup_repo_node(state: dict, config: RunnableConfig) -> dict:
     agents_md_content: str | None = None
     agents_md_path = f"{repo_dir}/AGENTS.md"
     safe_agents_path = shlex.quote(agents_md_path)
-    agents_check = await asyncio.to_thread(
-        sandbox.execute, f"test -f {safe_agents_path}"
-    )
+    agents_check = await asyncio.to_thread(sandbox.execute, f"test -f {safe_agents_path}")
     if agents_check.exit_code == 0:
-        cat_result = await asyncio.to_thread(
-            sandbox.execute, f"cat {safe_agents_path}"
-        )
+        cat_result = await asyncio.to_thread(sandbox.execute, f"cat {safe_agents_path}")
         if cat_result.exit_code == 0:
             agents_md_content = cat_result.output
             logger.info("Read AGENTS.md (%d chars)", len(agents_md_content or ""))
@@ -181,5 +183,5 @@ async def setup_repo_node(state: dict, config: RunnableConfig) -> dict:
         "repo_dir": repo_dir,
         "branch_name": branch_name,
         "agents_md_content": agents_md_content,
-        "files_changed_so_far": [],   # ADD — reset on each fresh setup
+        "files_changed_so_far": [],  # ADD — reset on each fresh setup
     }

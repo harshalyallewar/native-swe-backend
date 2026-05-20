@@ -1,4 +1,5 @@
 """Review PR node: mini deep agent for addressing PR review comments."""
+
 from __future__ import annotations
 
 import logging
@@ -20,7 +21,7 @@ from ..utils.sandbox_state import get_sandbox_backend
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_REVIEW_MODEL_ID = os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.1-70b-instruct")
+DEFAULT_REVIEW_MODEL_ID = os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.3-70b-instruct")
 REVIEW_RECURSION_LIMIT = 40
 
 

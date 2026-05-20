@@ -88,7 +88,9 @@ async def open_pr_if_needed(
         pr_payload = _extract_pr_params_from_messages(messages)
 
         if not pr_payload:
-            logger.info("No commit_and_open_pr tool call found, but proceeding to check for uncommitted changes.")
+            logger.info(
+                "No commit_and_open_pr tool call found, but proceeding to check for uncommitted changes."
+            )
             pr_payload = {}
 
         if pr_payload.get("success"):
@@ -129,7 +131,10 @@ async def open_pr_if_needed(
             sandbox_backend.execute, f"test -d {shlex.quote(repo_dir)}/.git"
         )
         if check_repo.exit_code != 0:
-            logger.info("Repository directory not found or not a git repository at %s, skipping PR safety net.", repo_dir)
+            logger.info(
+                "Repository directory not found or not a git repository at %s, skipping PR safety net.",
+                repo_dir,
+            )
             return None
 
         has_uncommitted_changes = await asyncio.to_thread(

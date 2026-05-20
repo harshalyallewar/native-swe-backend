@@ -1,10 +1,12 @@
 """Classify node: single LLM call to classify task intent."""
+
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Literal
-import asyncio
+
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph.state import RunnableConfig
 from pydantic import BaseModel, Field
@@ -15,7 +17,7 @@ from ..utils.model import make_model
 logger = logging.getLogger(__name__)
 
 DEFAULT_CLASSIFY_MODEL_ID = os.environ.get(
-    "CLASSIFY_MODEL_ID", os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.1-70b-instruct")
+    "CLASSIFY_MODEL_ID", os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.3-70b-instruct")
 )
 
 
@@ -64,6 +66,7 @@ Task: {last_user_text}
 Respond with the intent and a one-sentence reasoning."""
 
     try:
+
         def _classify_sync():
             model = make_model(DEFAULT_CLASSIFY_MODEL_ID, max_tokens=512)
             structured = model.with_structured_output(ClassifyOutput)

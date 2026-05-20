@@ -1,4 +1,5 @@
 """Commit and open PR node: deterministic, no LLM."""
+
 from __future__ import annotations
 
 import asyncio
@@ -40,8 +41,10 @@ def _build_commit_message(state: dict) -> str:
     if plan:
         descriptions = [t.get("description", "") for t in plan if t.get("description")]
         if descriptions:
-            return descriptions[0] if len(descriptions) == 1 else (
-                f"{descriptions[0]}\n\n" + "\n".join(f"- {d}" for d in descriptions[1:])
+            return (
+                descriptions[0]
+                if len(descriptions) == 1
+                else (f"{descriptions[0]}\n\n" + "\n".join(f"- {d}" for d in descriptions[1:]))
             )
     return "Automated changes by native-swe"
 
@@ -53,16 +56,20 @@ def _build_pr_title(state: dict) -> str:
         if len(title) > 70:
             title = title[:67] + "..."
         # Lowercase first letter to fit convention
-        return f"feat: {title.lower()}" if not title.lower().startswith(
-            ("fix:", "feat:", "chore:", "ci:")
-        ) else title
+        return (
+            f"feat: {title.lower()}"
+            if not title.lower().startswith(("fix:", "feat:", "chore:", "ci:"))
+            else title
+        )
     return "feat: native-swe automated changes"
 
 
 def _build_pr_body(state: dict) -> str:
     plan = state.get("plan") or []
     if not plan:
-        return "## Description\nAutomated changes by native-swe.\n\n## Test Plan\n- [ ] Review changes"
+        return (
+            "## Description\nAutomated changes by native-swe.\n\n## Test Plan\n- [ ] Review changes"
+        )
     descriptions = "\n".join(f"- {t.get('description', '')}" for t in plan if t.get("description"))
     return (
         "## Description\n"
@@ -102,13 +109,9 @@ async def commit_pr_node(state: dict, config: RunnableConfig) -> dict:
         }
 
     # Check for changes
-    has_uncommitted = await asyncio.to_thread(
-        git_has_uncommitted_changes, sandbox, repo_dir
-    )
+    has_uncommitted = await asyncio.to_thread(git_has_uncommitted_changes, sandbox, repo_dir)
     await asyncio.to_thread(git_fetch_origin, sandbox, repo_dir)
-    has_unpushed = await asyncio.to_thread(
-        git_has_unpushed_commits, sandbox, repo_dir
-    )
+    has_unpushed = await asyncio.to_thread(git_has_unpushed_commits, sandbox, repo_dir)
 
     if not (has_uncommitted or has_unpushed):
         logger.info("No changes detected — skipping commit/PR")
@@ -123,9 +126,7 @@ async def commit_pr_node(state: dict, config: RunnableConfig) -> dict:
         }
 
     # Identity for git + co-author trailer
-    user_identity = await asyncio.to_thread(
-        resolve_triggering_user_identity, config, github_token
-    )
+    user_identity = await asyncio.to_thread(resolve_triggering_user_identity, config, github_token)
 
     # Configure git user
     await asyncio.to_thread(
@@ -142,9 +143,7 @@ async def commit_pr_node(state: dict, config: RunnableConfig) -> dict:
     target_branch = branch_name or f"native-swe/{thread_id}"
     current_branch = await asyncio.to_thread(git_current_branch, sandbox, repo_dir)
     if current_branch != target_branch:
-        ok, err = await asyncio.to_thread(
-            git_checkout_branch, sandbox, repo_dir, target_branch
-        )
+        ok, err = await asyncio.to_thread(git_checkout_branch, sandbox, repo_dir, target_branch)
         if not ok:
             return {
                 "fatal_error": f"git checkout {target_branch} failed: {err}",
@@ -154,9 +153,7 @@ async def commit_pr_node(state: dict, config: RunnableConfig) -> dict:
     # Stage + commit
     if has_uncommitted:
         await asyncio.to_thread(git_add_all, sandbox, repo_dir)
-        commit_result = await asyncio.to_thread(
-            git_commit, sandbox, repo_dir, commit_message
-        )
+        commit_result = await asyncio.to_thread(git_commit, sandbox, repo_dir, commit_message)
         if commit_result.exit_code != 0:
             logger.error("git commit failed: %s", commit_result.output)
             return {
@@ -184,26 +181,19 @@ async def commit_pr_node(state: dict, config: RunnableConfig) -> dict:
         if is_permanent_github_push_failure(push_output):
             return {
                 "fatal_error": (
-                    f"permanent push failure: token does not have write access. "
-                    f"{push_output}"
+                    f"permanent push failure: token does not have write access. {push_output}"
                 ),
                 "error_stage": "commit_pr",
             }
         return {
-            "messages": [
-                HumanMessage(
-                    content=f"[commit_pr] git push failed: {push_output}"
-                )
-            ],
+            "messages": [HumanMessage(content=f"[commit_pr] git push failed: {push_output}")],
             "pr_url": None,
             "pr_number": None,
         }
 
     # Resolve base + open PR
     try:
-        base_branch = await get_github_default_branch(
-            repo_owner, repo_name, installation_token
-        )
+        base_branch = await get_github_default_branch(repo_owner, repo_name, installation_token)
     except Exception:  # noqa: BLE001
         base_branch = "main"
 
@@ -221,18 +211,14 @@ async def commit_pr_node(state: dict, config: RunnableConfig) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to create GitHub PR")
         return {
-            "messages": [
-                HumanMessage(content=f"[commit_pr] PR creation failed: {exc}")
-            ],
+            "messages": [HumanMessage(content=f"[commit_pr] PR creation failed: {exc}")],
             "pr_url": None,
             "pr_number": None,
         }
 
     if not pr_url:
         return {
-            "messages": [
-                HumanMessage(content="[commit_pr] PR creation returned no URL")
-            ],
+            "messages": [HumanMessage(content="[commit_pr] PR creation returned no URL")],
             "pr_url": None,
             "pr_number": None,
         }

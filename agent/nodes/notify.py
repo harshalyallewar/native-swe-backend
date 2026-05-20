@@ -1,11 +1,12 @@
 """Notify node: post final result to Slack/GitHub/Linear. Idempotent."""
+
 from __future__ import annotations
 
 import logging
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph.state import RunnableConfig
-
+from ..utils.sandbox_state import evict_sandbox_backend
 from ..utils.github_app import get_github_app_installation_token
 from ..utils.github_comments import post_github_comment
 from ..utils.messages import extract_text_content
@@ -38,7 +39,32 @@ async def notify_node(state: dict, config: RunnableConfig) -> dict:
     if state.get("notification_sent"):
         return {}
 
-    source = state.get("source") or config.get("configurable", {}).get("source")
+    configurable = config.get("configurable", {}) if config else {}
+    source = state.get("source") or configurable.get("source")
+
+    # Send pending side-notification for unrelated mid-task messages
+    pending_notif = state.get("pending_user_notification")
+    if pending_notif and source:
+        try:
+            if source == "slack":
+                slack_thread = configurable.get("slack_thread") or {}
+                channel_id = slack_thread.get("channel_id")
+                thread_ts = slack_thread.get("thread_ts")
+                if channel_id and thread_ts:
+                    await post_slack_thread_reply(channel_id, thread_ts, pending_notif)
+            elif source == "github":
+                repo = state.get("repo") or configurable.get("repo") or {}
+                github_issue = configurable.get("github_issue") or {}
+                issue_number = state.get("pr_number") or github_issue.get("number")
+                if issue_number and repo.get("owner") and repo.get("name"):
+                    token = await get_github_app_installation_token()
+                    if token:
+                        await post_github_comment(
+                            repo, int(issue_number), pending_notif, token=token
+                        )
+        except Exception:
+            logger.exception("Failed to send pending user notification")
+
     fatal = state.get("fatal_error")
     pr_url = state.get("pr_url")
     verification_error = state.get("verification_error")
@@ -47,27 +73,22 @@ async def notify_node(state: dict, config: RunnableConfig) -> dict:
 
     # Compose message
     if fatal:
-        message = (
-            f"❌ Task failed at stage `{state.get('error_stage') or 'unknown'}`:\n{fatal}"
-        )
+        message = f"❌ Task failed at stage `{state.get('error_stage') or 'unknown'}`:\n{fatal}"
     elif pr_url:
         summary = _build_summary(state)
         message = f"✅ Done! PR opened: {pr_url}"
         if summary:
             message = f"{message}\n\n{summary}"
     elif intent == "question":
-        answer = _last_assistant_text(messages)
-        message = answer or "Task completed."
+        answer = state.get("qa_answer") or _last_assistant_text(messages)
+        message = answer or "Task completed (no answer generated)."
     elif verification_error:
         attempts = state.get("verification_attempts", 0)
-        message = (
-            f"⚠️ Verification failed after {attempts} attempts:\n{verification_error}"
-        )
+        message = f"⚠️ Verification failed after {attempts} attempts:\n{verification_error}"
     else:
         message = "Task completed."
 
     # Route to correct notification channel
-    configurable = config.get("configurable", {}) if config else {}
     sent = False
 
     try:
@@ -86,15 +107,11 @@ async def notify_node(state: dict, config: RunnableConfig) -> dict:
             if issue_number and repo.get("owner") and repo.get("name"):
                 token = await get_github_app_installation_token()
                 if token:
-                    sent = await post_github_comment(
-                        repo, int(issue_number), message, token=token
-                    )
+                    sent = await post_github_comment(repo, int(issue_number), message, token=token)
                 else:
                     logger.error("No GitHub App token available for notify")
             else:
-                logger.warning(
-                    "GitHub source but missing issue_number or repo for notify"
-                )
+                logger.warning("GitHub source but missing issue_number or repo for notify")
         elif source == "linear":
             # No Linear notify implemented in current codebase; log only
             logger.info("Linear source notification (no-op): %s", message[:100])
@@ -103,5 +120,10 @@ async def notify_node(state: dict, config: RunnableConfig) -> dict:
             logger.info("Unknown source '%s' for notify; message=%s", source, message[:100])
     except Exception:  # noqa: BLE001
         logger.exception("notify_node failed to send message")
+
+    # Clean up sandbox from memory — thread is done
+    thread_id = state.get("thread_id") or (config or {}).get("configurable", {}).get("thread_id")
+    if thread_id:
+        evict_sandbox_backend(thread_id)
 
     return {"notification_sent": True if sent else False}

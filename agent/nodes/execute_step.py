@@ -1,4 +1,5 @@
 """Execute step node: a narrow-scope mini deep agent for ONE todo item."""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,13 +12,14 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph.state import RunnableConfig
 
 from ..middleware import SanitizeToolInputsMiddleware, ToolErrorMiddleware
+from ..tools import fetch_url, http_request, web_search
 from ..utils.model import make_model
 from ..utils.preconditions import require_repo_cloned
 from ..utils.sandbox_state import get_sandbox_backend
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_EXECUTE_MODEL_ID = os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.1-70b-instruct")
+DEFAULT_EXECUTE_MODEL_ID = os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.3-70b-instruct")
 EXECUTE_RECURSION_LIMIT = 40
 
 
@@ -92,33 +94,74 @@ async def execute_step_node(state: dict, config: RunnableConfig) -> dict:
 
     files_hint = todo.get("files_likely_touched") or []
     files_str = ", ".join(files_hint) if files_hint else "(unknown — discover them)"
+    files_changed_so_far = list(state.get("files_changed_so_far") or [])
 
-    prompt = f"""You are implementing one specific task step in an already-cloned repository.
+    # Build detailed previous steps context
+    prev_steps_context = ""
+    if current_step > 0:
+        prev_steps = plan[:current_step]
+        prev_lines = ["Previous completed steps and their outcomes:"]
+        for i, prev in enumerate(prev_steps):
+            status = "COMPLETED" if prev.get("completed") else "DONE"
+            prev_lines.append(f"\n  Step {i + 1} [{status}]: {prev['description']}")
+            if prev.get("files_actually_changed"):
+                prev_lines.append(f"  Files changed: {', '.join(prev['files_actually_changed'])}")
+            if prev.get("outcome_summary"):
+                prev_lines.append(f"  Outcome: {prev['outcome_summary']}")
 
-Repository location: {repo_dir}
+        if files_changed_so_far:
+            prev_lines.append(
+                f"\nAll files modified so far in this task: {', '.join(files_changed_so_far)}"
+            )
+        prev_lines.append(
+            "\nIMPORTANT: Read the files listed above before writing any code "
+            "that depends on them. Their contents reflect ALL changes from previous steps."
+        )
+        prev_steps_context = "\n".join(prev_lines)
+
+    remaining_steps = plan[current_step + 1 :]
+    remaining_context = ""
+    if remaining_steps:
+        remaining_lines = [
+            "\nUpcoming steps after this one (for awareness only, do NOT implement them now):"
+        ]
+        for i, upcoming in enumerate(remaining_steps):
+            remaining_lines.append(f"  Step {current_step + i + 2}: {upcoming['description']}")
+        remaining_context = "\n".join(remaining_lines)
+
+    prompt = f"""You are a software engineer implementing one specific step of a larger task.
+The repository is already cloned at: {repo_dir}
 Branch: {branch_name}
 
 AGENTS.md rules (MANDATORY — follow these exactly):
 {agents_md}
 
-Your ONLY job right now:
+{prev_steps_context}
+
+YOUR CURRENT TASK (Step {current_step + 1} of {len(plan)}):
 {todo["description"]}
 
 Files likely involved: {files_str}
+{remaining_context}
 {retry_context}
-Rules:
-- Do NOT run linters or formatters. That happens automatically after you finish.
-- Do NOT run tests. That happens automatically after you finish.
-- Do NOT commit anything. That happens automatically after you finish.
-- Do NOT message anyone. That happens automatically after you finish.
-- Do NOT move on to other todo items. Only do the one task above.
-- When you are done, stop calling tools.
+
+HOW TO WORK:
+1. READ first — before writing any code, read all relevant files.
+   If previous steps changed files you depend on, read their CURRENT content.
+2. IMPLEMENT the change. Write clean minimal code matching existing style.
+3. VERIFY your own work — re-read changed files to confirm correctness.
+4. USE bash freely — you can run any command: grep, find, cat, python, npm, etc.
+5. USE web_search or fetch_url if you need docs, examples, or API references.
+6. STOP when this step is done. Do NOT implement other steps.
+   Do NOT run linters. Do NOT commit. Those happen automatically.
+
+You have full bash access. Use it. Read before you write.
 """
 
     agent = create_deep_agent(
         model=make_model(DEFAULT_EXECUTE_MODEL_ID, max_tokens=16_000),
         system_prompt=prompt,
-        tools=[],
+        tools=[web_search, fetch_url, http_request],
         backend=sandbox,
         middleware=[
             ToolErrorMiddleware(),
@@ -130,11 +173,7 @@ Rules:
 
     try:
         result = await agent.ainvoke(
-            {
-                "messages": [
-                    {"role": "user", "content": todo["description"]}
-                ]
-            },
+            {"messages": [{"role": "user", "content": todo["description"]}]},
             config=invoke_config,
         )
     except Exception as exc:  # noqa: BLE001
@@ -161,15 +200,26 @@ Rules:
         ", ".join(files_changed) or "(none)",
     )
 
+    # Update plan with per-step file tracking
+    updated_plan = list(plan)
+    updated_plan[current_step] = {
+        **todo,
+        "completed": True,
+        "files_actually_changed": files_changed,
+        "outcome_summary": f"Changed {len(files_changed)} file(s): {', '.join(files_changed) or 'none'}",
+    }
+
     summary_msg = HumanMessage(
         content=(
-            f"[execute_step #{current_step + 1}] "
-            f"Changed {len(files_changed)} file(s): "
-            f"{', '.join(files_changed) or '(none)'}"
+            f"[execute_step #{current_step + 1}/{len(plan)}] "
+            f"Completed: {todo['description'][:80]}. "
+            f"Files changed: {', '.join(files_changed) or '(none)'}"
         )
     )
 
     return {
         "messages": [*tail, summary_msg],
         "files_changed_so_far": accumulated,
+        "current_step": current_step + 1,  # advance step counter HERE not in verify
+        "plan": updated_plan,
     }

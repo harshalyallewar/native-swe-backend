@@ -1,6 +1,6 @@
 ﻿================================================================================
 PROJECT DUMP: D:\Normal Files\native-swe-langgraph
-Generated: 05/16/2026 15:14:21
+Generated: 05/19/2026 15:58:29
 ================================================================================
 
 DIRECTORY STRUCTURE:
@@ -18,6 +18,7 @@ INSTALLATION.md
 langgraph.json
 LICENSE
 Makefile
+powershell -ExecutionPolicy Bypass -File dump_project.ps1.txt
 pyproject.toml
 README.md
 SECURITY.md
@@ -1550,6 +1551,12 @@ help:
 
 
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+FILE: powershell -ExecutionPolicy Bypass -File dump_project.ps1.txt
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+
+
+
+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 FILE: pyproject.toml
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
@@ -1569,7 +1576,7 @@ dependencies = [
     "cryptography>=41.0.0",
     "langgraph-sdk>=0.3.13",
     "langchain>=1.2.17",
-    "langgraph>=1.1.10",
+    "langgraph>=1.2.0",
     "markdownify>=1.2.2",
     "langchain-anthropic>=1.4.2",
     "langgraph-cli[inmem]>=0.4.24",
@@ -1578,6 +1585,7 @@ dependencies = [
     "langchain-daytona>=0.0.5",
     "exa-py>=2.12.1",
     "langchain-nvidia-ai-endpoints>=1.3.0",
+    "nest-asyncio>=1.6.0",
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
 ]
@@ -1617,6 +1625,9 @@ select = [
 ignore = [
     "E501",  # line too long (handled by formatter)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+"agent/webapp.py" = ["E402"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
@@ -1910,9 +1921,7 @@ LOG_FILENAME = os.environ.get("LOG_FILENAME", "native_swe.log")
 _MAX_BYTES = 10 * 1024 * 1024
 _BACKUP_COUNT = 5
 
-_LOG_FORMAT = (
-    "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s"
-)
+_LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 
@@ -2337,6 +2346,7 @@ FILE: agent\server.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Main entry point for Native-SWE agent â€” uses the custom StateGraph."""
+
 # ruff: noqa: E402
 import logging
 import warnings
@@ -2389,6 +2399,10 @@ from .logging_config import setup_logging
 setup_logging()
 
 import httpx
+import nest_asyncio
+
+nest_asyncio.apply()
+
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from langchain_core.messages.content import create_text_block
 from langgraph_sdk import get_client
@@ -3236,7 +3250,6 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
         "name": repo.get("name", ""),
     }
 
-
     issue_id = str(issue.get("id", ""))
     issue_number = issue.get("number")
     github_login = payload.get("sender", {}).get("login", "")
@@ -3357,8 +3370,10 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
             "files_changed_so_far": [],
             "fatal_error": None,
         },
-        config={"configurable": {**configurable, "thread_id": thread_id},
-                "metadata": _AGENT_VERSION_METADATA},
+        config={
+            "configurable": {**configurable, "thread_id": thread_id},
+            "metadata": _AGENT_VERSION_METADATA,
+        },
         if_not_exists="create",
     )
     logger.info("LangGraph run created for thread %s from GitHub issue", thread_id)
@@ -3368,7 +3383,6 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
 async def github_webhook(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
     """Handle GitHub webhooks for issue and PR events that tag @native-swe."""
     body = await request.body()
-
 
     signature = request.headers.get("X-Hub-Signature-256", "")
     if not verify_github_signature(body, signature, secret=GITHUB_WEBHOOK_SECRET):
@@ -3411,7 +3425,6 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks) ->
             logger.info("Ignoring unsupported GitHub issue action: %s", action)
             return {"status": "ignored", "reason": f"Unsupported GitHub issue action: {action}"}
         if action == "edited":
-
             changes = payload.get("changes", {})
             if not any(field in changes for field in ("body", "title")):
                 logger.info("Ignoring GitHub issue edit without title/body changes")
@@ -3447,6 +3460,99 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks) ->
     logger.info("Ignoring unsupported GitHub payload shape for event=%s", event_type)
     return {"status": "ignored", "reason": f"Unsupported payload for event type: {event_type}"}
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    validate_sandbox_startup_config()
+    await _cleanup_stuck_threads()
+    yield
+
+
+async def _cleanup_stuck_threads() -> None:
+    """On startup, cancel any runs left over from the previous session."""
+    try:
+        _client = get_client(url=LANGGRAPH_URL)
+        busy_threads = await _client.threads.search(status="busy", limit=100)
+
+        if not busy_threads:
+            logger.info("No stuck threads found on startup")
+            return
+
+        logger.warning("Found %d stuck thread(s) on startup, cleaning up", len(busy_threads))
+
+        for thread in busy_threads:
+            tid = thread.get("thread_id") or thread.get("id")
+            if not tid:
+                continue
+            try:
+                # Get all runs for this thread
+                runs = await _client.runs.list(tid, limit=10)
+                for run in runs:
+                    run_id = run.get("run_id") or run.get("id")
+                    run_status = run.get("status")
+                    # Cancel any run that's in a non-terminal state
+                    if run_status in ("pending", "running", "error"):
+                        await _client.runs.cancel(tid, run_id, wait=False)
+                        logger.info("Cancelled orphaned run %s on thread %s", run_id, tid)
+            except Exception:
+                logger.warning("Failed to cancel runs for thread %s", tid, exc_info=True)
+
+    except Exception:
+        logger.exception("Startup thread cleanup failed")
+
+
+# import asyncio
+
+# async def _periodic_thread_cleanup(interval_seconds: int = 300) -> None:
+#     """Every 5 minutes, cancel runs stuck longer than 30 minutes."""
+#     while True:
+#         await asyncio.sleep(interval_seconds)
+#         try:
+#             _client = get_client(url=LANGGRAPH_URL)
+#             busy_threads = await _client.threads.search(status="busy", limit=100)
+#             now = datetime.now(UTC)
+
+#             for thread in busy_threads:
+#                 tid = thread.get("thread_id") or thread.get("id")
+#                 updated_at = thread.get("updated_at")
+#                 if not tid or not updated_at:
+#                     continue
+
+#                 # Parse updated_at
+#                 if isinstance(updated_at, str):
+#                     updated_dt = datetime.fromisoformat(
+#                         updated_at.replace("Z", "+00:00")
+#                     )
+#                 else:
+#                     continue
+
+#                 age_minutes = (now - updated_dt).total_seconds() / 60
+#                 if age_minutes > 30:
+#                     logger.warning(
+#                         "Thread %s stuck busy for %.0f min, cancelling runs",
+#                         tid, age_minutes
+#                     )
+#                     try:
+#                         runs = await _client.runs.list(tid, limit=5)
+#                         for run in runs:
+#                             run_id = run.get("run_id") or run.get("id")
+#                             if run.get("status") in ("pending", "running"):
+#                                 await _client.runs.cancel(tid, run_id, wait=False)
+#                     except Exception:
+#                         logger.warning("Failed cleanup for thread %s", tid, exc_info=True)
+
+#         except Exception:
+#             logger.exception("Periodic thread cleanup failed")
+
+
+# @asynccontextmanager
+# async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+#     validate_sandbox_startup_config()
+#     await _cleanup_stuck_threads()
+    
+#     # Start background cleanup task
+#     cleanup_task = asyncio.create_task(_periodic_thread_cleanup())
+#     yield
+#     cleanup_task.cancel()
 
 
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -3454,6 +3560,7 @@ FILE: agent\graph\builder.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """StateGraph builder for the Native-SWE custom state machine."""
+
 from __future__ import annotations
 
 from langgraph.checkpoint.memory import MemorySaver
@@ -3532,7 +3639,12 @@ def build_graph():
     g.add_conditional_edges(
         "check_queue",
         _route_check_queue_dispatch,
-        {"classify": "classify", "verify": "verify", "notify": "notify"},
+        {
+            "classify": "classify",
+            "execute_step": "execute_step",
+            "verify": "verify",
+            "notify": "notify",
+        },
     )
 
     # classify â†’ plan | answer_qa | review_pr
@@ -3562,7 +3674,6 @@ def build_graph():
         route_after_verify,
         {
             "passed": "commit_pr",
-            "next_step": "execute_step",
             "retry": "execute_step",
             "retry_review": "review_pr",
             "exhausted": "notify",
@@ -3587,12 +3698,14 @@ def build_graph():
 
 
 def _route_check_queue_dispatch(state: AgentState) -> str:
-    """Dispatch from check_queue based on graph state.
-
-    - No intent classified yet â†’ go to classify (initial pass after setup_repo).
-    - New instructions arrived mid-run â†’ go to classify (re-classify).
-    - Otherwise â†’ go to verify (post-execute_step path).
-    - Fatal error somehow set â†’ notify.
+    """
+    Route after check_queue:
+    - fatal_error â†’ notify
+    - has_new_instructions â†’ classify (re-plan with appended todos)
+    - no intent yet â†’ classify (initial pass)
+    - intent == question â†’ notify (answer already generated by answer_qa)
+    - steps remaining in plan â†’ execute_step (keep executing)
+    - all steps done â†’ verify (only after ALL steps complete)
     """
     if state.get("fatal_error"):
         return "notify"
@@ -3602,13 +3715,16 @@ def _route_check_queue_dispatch(state: AgentState) -> str:
         return "classify"
 
     intent = state.get("intent")
-
-     # question intent skips verify/commit â€” go straight to notify
     if intent == "question":
         return "notify"
 
-    # code_change and review: go to verify
-    return "verify"
+    # For code_change and review: check if steps remain
+    plan = state.get("plan") or []
+    current_step = state.get("current_step", 0)
+    if current_step < len(plan):
+        return "execute_step"  # more steps to do
+
+    return "verify"  # all steps done, now verify
 
 
 
@@ -3617,6 +3733,7 @@ FILE: agent\graph\routing.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Routing functions for the Native-SWE state graph."""
+
 from __future__ import annotations
 
 from .state import AgentState
@@ -3643,22 +3760,24 @@ def route_after_plan(state: AgentState) -> str:
     return "error" if state.get("fatal_error") else "continue"
 
 
-
-
-
 def route_after_verify(state: AgentState) -> str:
+    """
+    After verify:
+    - passed â†’ commit_pr
+    - failed but attempts remaining â†’ re-run execute_step for fix
+    - exhausted â†’ notify
+    """
     if state.get("lint_passed") and state.get("tests_passed"):
-        current_step = state.get("current_step", 0)
-        plan = state.get("plan") or []
-        if current_step < len(plan):
-            return "next_step"
-        return "passed"
+        return "passed"  # â†’ commit_pr
+
     attempts = state.get("verification_attempts", 0)
     if attempts >= MAX_VERIFICATION_ATTEMPTS:
         return "exhausted"
+
     if state.get("intent") == "review":
         return "retry_review"
-    return "retry"
+
+    return "retry"  # â†’ execute_step to fix errors
 
 
 def route_after_commit_pr(state: AgentState) -> str:
@@ -3690,6 +3809,8 @@ class TodoItem(TypedDict):
     files_likely_touched: list[str]
     verification_strategy: str
     completed: bool
+    files_actually_changed: list[str]  # populated by execute_step
+    outcome_summary: str  # populated by execute_step
 
 
 class AgentState(TypedDict):
@@ -3735,6 +3856,9 @@ class AgentState(TypedDict):
     # â”€â”€ set by notify node â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     notification_sent: bool
 
+    qa_answer: str | None  # explicit answer from answer_qa node
+    pending_user_notification: str | None  # side message to send to user
+
     # â”€â”€ error handling â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     fatal_error: str | None
     error_stage: str | None
@@ -3746,6 +3870,7 @@ FILE: agent\graph\__init__.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Graph package for Native-SWE state machine architecture."""
+
 from .builder import build_graph
 from .state import AgentState, RepoConfig, TodoItem
 
@@ -4067,6 +4192,7 @@ FILE: agent\middleware\execution_state.py
 # architecture. Workspace validation is now handled by require_repo_cloned()
 # in each graph node. Kept for reference only â€” do not import in new code.
 import logging
+import shlex
 from collections.abc import Awaitable, Callable
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
@@ -4075,16 +4201,15 @@ from langgraph.config import get_config
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
-logger = logging.getLogger(__name__)
-
-import shlex
-
 from ..utils.sandbox_paths import aresolve_repo_dir
 from ..utils.sandbox_state import get_sandbox_backend
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutionStateMiddleware(AgentMiddleware):
     """Validates workspace state to ensure repository is cloned."""
+
     state_schema = AgentState
 
     async def _validate_workspace(self, tool_name: str, command: str) -> str | None:
@@ -4341,7 +4466,9 @@ async def open_pr_if_needed(
         pr_payload = _extract_pr_params_from_messages(messages)
 
         if not pr_payload:
-            logger.info("No commit_and_open_pr tool call found, but proceeding to check for uncommitted changes.")
+            logger.info(
+                "No commit_and_open_pr tool call found, but proceeding to check for uncommitted changes."
+            )
             pr_payload = {}
 
         if pr_payload.get("success"):
@@ -4382,7 +4509,10 @@ async def open_pr_if_needed(
             sandbox_backend.execute, f"test -d {shlex.quote(repo_dir)}/.git"
         )
         if check_repo.exit_code != 0:
-            logger.info("Repository directory not found or not a git repository at %s, skipping PR safety net.", repo_dir)
+            logger.info(
+                "Repository directory not found or not a git repository at %s, skipping PR safety net.",
+                repo_dir,
+            )
             return None
 
         has_uncommitted_changes = await asyncio.to_thread(
@@ -4710,6 +4840,7 @@ FILE: agent\nodes\answer_qa.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Answer QA node: read-only mini deep agent for questions."""
+
 from __future__ import annotations
 
 import logging
@@ -4720,14 +4851,20 @@ from langchain_core.messages import AnyMessage
 from langgraph.graph.state import RunnableConfig
 
 from ..middleware import ToolErrorMiddleware
-from ..tools import fetch_url, http_request, web_search
+from ..tools import (
+    fetch_url,
+    get_pr_check_runs,
+    get_pr_review_comments,
+    http_request,
+    web_search,
+)
 from ..utils.messages import extract_text_content
 from ..utils.model import make_model
 from ..utils.sandbox_state import get_sandbox_backend
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_QA_MODEL_ID = os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.1-70b-instruct")
+DEFAULT_QA_MODEL_ID = os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.3-70b-instruct")
 QA_RECURSION_LIMIT = 30
 
 
@@ -4761,22 +4898,60 @@ async def answer_qa_node(state: dict, config: RunnableConfig) -> dict:
     user_message = _last_human_text(messages) or "Please answer the user's question."
     repo_dir = state.get("repo_dir") or "<unknown>"
     agents_md = state.get("agents_md_content") or "none"
+    branch_name = state.get("branch_name") or "<unknown>"
 
-    prompt = f"""You are answering a question about a code repository.
-The repository is already cloned at: {repo_dir}
+    repo = state.get("repo") or config.get("configurable", {}).get("repo") or {}
+    pr_number = state.get("pr_number")
+    github_issue = config.get("configurable", {}).get("github_issue") or {}
+
+    github_context = f"""
+Repository: {repo.get("owner")}/{repo.get("name")}
+Branch: {branch_name}
+Repo cloned at: {repo_dir}
+"""
+    if pr_number:
+        github_context += f"PR Number: #{pr_number} (you can fetch PR review comments)\n"
+    if github_issue.get("number"):
+        github_context += (
+            f"Issue Number: #{github_issue['number']} â€” {github_issue.get('title', '')}\n"
+        )
+
+    prompt = f"""You are answering a question about a software project.
+You have FULL access to the codebase via bash commands â€” use them freely.
+
+{github_context}
 
 AGENTS.md: {agents_md}
 
-Answer the question thoroughly using the available tools.
-Do NOT modify any files.
-Do NOT commit anything.
-When you have a complete answer, stop calling tools.
+Available capabilities:
+- Run ANY bash command: grep, find, cat, git log, git blame, git diff, python, etc.
+- Read any file in the repository
+- Search git history: git log --oneline, git show, git blame
+- Check PR review comments via get_pr_review_comments tool
+- Check CI status via get_pr_check_runs tool
+- Search the web via web_search for docs or context
+- Fetch any URL via fetch_url
+
+HOW TO ANSWER:
+1. Explore the codebase using bash commands to gather facts
+2. Check git history if the question is about why something changed
+3. Read relevant source files, tests, configs
+4. If question is about an issue/PR, fetch its comments for context
+5. Give a thorough, accurate answer backed by what you found
+6. Do NOT modify any files
+7. Do NOT commit anything
 """
 
     agent = create_deep_agent(
         model=make_model(DEFAULT_QA_MODEL_ID, max_tokens=16_000),
         system_prompt=prompt,
-        tools=[web_search, fetch_url, http_request],
+        tools=[
+            web_search,
+            fetch_url,
+            http_request,
+            get_pr_review_comments,
+            get_pr_check_runs,
+        ],
         backend=sandbox,
         middleware=[ToolErrorMiddleware()],
     )
@@ -4796,7 +4971,22 @@ When you have a complete answer, stop calling tools.
         }
 
     inner_messages = result.get("messages", []) if isinstance(result, dict) else []
-    return {"messages": inner_messages[-5:]}
+
+    # Extract the final answer explicitly
+    final_answer = ""
+    for msg in reversed(inner_messages):
+        if getattr(msg, "type", None) == "ai":
+            from ..utils.messages import extract_text_content
+
+            text = extract_text_content(msg.content)
+            if text:
+                final_answer = text
+                break
+
+    return {
+        "messages": inner_messages[-5:],
+        "qa_answer": final_answer,
+    }
 
 
 
@@ -4805,9 +4995,11 @@ FILE: agent\nodes\check_queue.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Check queue node: drain pending messages from the LangGraph store."""
+
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -4818,6 +5010,46 @@ from langgraph.graph.state import RunnableConfig
 from ..utils.multimodal import fetch_image_block
 
 logger = logging.getLogger(__name__)
+
+STOP_PATTERNS = re.compile(
+    r"^\s*(stop|quit|exit|cancel|abort|halt|nevermind|never mind)\s*$", re.IGNORECASE
+)
+
+
+async def _classify_incoming_message(
+    message_text: str,
+    current_task_description: str,
+    model,
+) -> str:
+    """Returns: 'stop' | 'related' | 'unrelated'"""
+    from langchain_core.messages import HumanMessage as LCHumanMessage
+
+    if STOP_PATTERNS.match(message_text.strip()):
+        return "stop"
+
+    prompt = f"""Current task being executed:
+{current_task_description}
+
+New incoming message:
+{message_text}
+
+Classify the new message as exactly one of:
+- "stop": user wants to stop/cancel the current task
+- "related": message adds to, modifies, or clarifies the current task
+- "unrelated": message is about something completely different
+
+Respond with only one word: stop, related, or unrelated"""
+
+    try:
+        result = model.invoke([LCHumanMessage(content=prompt)])
+        content = result.content.strip().lower() if hasattr(result, "content") else "unrelated"
+        if "stop" in content:
+            return "stop"
+        if "related" in content:
+            return "related"
+        return "unrelated"
+    except Exception:
+        return "unrelated"
 
 
 async def _build_blocks_from_payload(
@@ -4900,8 +5132,80 @@ async def check_queue_node(state: dict, config: RunnableConfig) -> dict:
     if not content_blocks:
         return {"has_new_instructions": False}
 
-    new_message = HumanMessage(content=content_blocks)
+    # Get text of the new message for classification
+    new_message_text = " ".join(
+        block.get("text", "")
+        for block in content_blocks
+        if isinstance(block, dict) and block.get("type") == "text"
+    )
 
+    current_intent = state.get("intent")
+    is_mid_task = current_intent is not None
+
+    if is_mid_task and new_message_text:
+        import os as _os
+
+        from ..utils.model import make_model
+
+        classify_model = make_model(
+            _os.environ.get("CLASSIFY_MODEL_ID", _os.environ.get("LLM_MODEL_ID", "nvidia:llama-3.3-70b-instruct")), max_tokens=64
+        )
+
+        plan = state.get("plan") or []
+        current_step = state.get("current_step", 0)
+        task_desc = "\n".join(f"- {t['description']}" for t in plan) or "(no plan)"
+
+        message_class = await _classify_incoming_message(
+            new_message_text, str(task_desc), classify_model
+        )
+
+        if message_class == "stop":
+            logger.info("Stop command received for thread %s", thread_id)
+            return {
+                "fatal_error": "Task stopped by user request.",
+                "error_stage": "user_stop",
+                "has_new_instructions": False,
+            }
+
+        if message_class == "unrelated":
+            logger.info("Unrelated message received mid-task for thread %s", thread_id)
+            ignore_msg = HumanMessage(
+                content=(
+                    f"[system] User sent an unrelated message while task is running: "
+                    f'"{new_message_text[:100]}". '
+                    f"Notify user that current task is still running."
+                )
+            )
+            return {
+                "messages": [ignore_msg],
+                "has_new_instructions": False,
+                "pending_user_notification": (
+                    "I received your message but I'm currently working on another task. "
+                    "I'll get to it when this one is complete, or send 'stop' to cancel."
+                ),
+            }
+
+        if message_class == "related":
+            logger.info(
+                "Related message received mid-task for thread %s, appending to plan", thread_id
+            )
+            directive_msg = HumanMessage(
+                content=(
+                    f"[mid-task instruction] The following new instruction arrived "
+                    f"while executing the current plan. "
+                    f"DO NOT restart or discard already-completed steps. "
+                    f"APPEND new todos at the end of the existing plan to honor this instruction. "
+                    f"Already completed steps: {current_step} of {len(plan)}.\n\n"
+                    f"New instruction: {new_message_text}"
+                )
+            )
+            return {
+                "messages": [directive_msg],
+                "has_new_instructions": True,
+            }
+
+    # Original path: first message or post-task message
+    new_message = HumanMessage(content=content_blocks)
     return {
         "messages": [new_message],
         "has_new_instructions": True,
@@ -4914,12 +5218,14 @@ FILE: agent\nodes\classify.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Classify node: single LLM call to classify task intent."""
+
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from typing import Literal
-import asyncio
+
 from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph.state import RunnableConfig
 from pydantic import BaseModel, Field
@@ -4930,7 +5236,7 @@ from ..utils.model import make_model
 logger = logging.getLogger(__name__)
 
 DEFAULT_CLASSIFY_MODEL_ID = os.environ.get(
-    "CLASSIFY_MODEL_ID", os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.1-70b-instruct")
+    "CLASSIFY_MODEL_ID", os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.3-70b-instruct")
 )
 
 
@@ -4979,6 +5285,7 @@ Task: {last_user_text}
 Respond with the intent and a one-sentence reasoning."""
 
     try:
+
         def _classify_sync():
             model = make_model(DEFAULT_CLASSIFY_MODEL_ID, max_tokens=512)
             structured = model.with_structured_output(ClassifyOutput)
@@ -5009,6 +5316,7 @@ FILE: agent\nodes\commit_pr.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Commit and open PR node: deterministic, no LLM."""
+
 from __future__ import annotations
 
 import asyncio
@@ -5050,8 +5358,10 @@ def _build_commit_message(state: dict) -> str:
     if plan:
         descriptions = [t.get("description", "") for t in plan if t.get("description")]
         if descriptions:
-            return descriptions[0] if len(descriptions) == 1 else (
-                f"{descriptions[0]}\n\n" + "\n".join(f"- {d}" for d in descriptions[1:])
+            return (
+                descriptions[0]
+                if len(descriptions) == 1
+                else (f"{descriptions[0]}\n\n" + "\n".join(f"- {d}" for d in descriptions[1:]))
             )
     return "Automated changes by native-swe"
 
@@ -5063,16 +5373,20 @@ def _build_pr_title(state: dict) -> str:
         if len(title) > 70:
             title = title[:67] + "..."
         # Lowercase first letter to fit convention
-        return f"feat: {title.lower()}" if not title.lower().startswith(
-            ("fix:", "feat:", "chore:", "ci:")
-        ) else title
+        return (
+            f"feat: {title.lower()}"
+            if not title.lower().startswith(("fix:", "feat:", "chore:", "ci:"))
+            else title
+        )
     return "feat: native-swe automated changes"
 
 
 def _build_pr_body(state: dict) -> str:
     plan = state.get("plan") or []
     if not plan:
-        return "## Description\nAutomated changes by native-swe.\n\n## Test Plan\n- [ ] Review changes"
+        return (
+            "## Description\nAutomated changes by native-swe.\n\n## Test Plan\n- [ ] Review changes"
+        )
     descriptions = "\n".join(f"- {t.get('description', '')}" for t in plan if t.get("description"))
     return (
         "## Description\n"
@@ -5112,13 +5426,9 @@ async def commit_pr_node(state: dict, config: RunnableConfig) -> dict:
         }
 
     # Check for changes
-    has_uncommitted = await asyncio.to_thread(
-        git_has_uncommitted_changes, sandbox, repo_dir
-    )
+    has_uncommitted = await asyncio.to_thread(git_has_uncommitted_changes, sandbox, repo_dir)
     await asyncio.to_thread(git_fetch_origin, sandbox, repo_dir)
-    has_unpushed = await asyncio.to_thread(
-        git_has_unpushed_commits, sandbox, repo_dir
-    )
+    has_unpushed = await asyncio.to_thread(git_has_unpushed_commits, sandbox, repo_dir)
 
     if not (has_uncommitted or has_unpushed):
         logger.info("No changes detected â€” skipping commit/PR")
@@ -5133,9 +5443,7 @@ async def commit_pr_node(state: dict, config: RunnableConfig) -> dict:
         }
 
     # Identity for git + co-author trailer
-    user_identity = await asyncio.to_thread(
-        resolve_triggering_user_identity, config, github_token
-    )
+    user_identity = await asyncio.to_thread(resolve_triggering_user_identity, config, github_token)
 
     # Configure git user
     await asyncio.to_thread(
@@ -5152,9 +5460,7 @@ async def commit_pr_node(state: dict, config: RunnableConfig) -> dict:
     target_branch = branch_name or f"native-swe/{thread_id}"
     current_branch = await asyncio.to_thread(git_current_branch, sandbox, repo_dir)
     if current_branch != target_branch:
-        ok, err = await asyncio.to_thread(
-            git_checkout_branch, sandbox, repo_dir, target_branch
-        )
+        ok, err = await asyncio.to_thread(git_checkout_branch, sandbox, repo_dir, target_branch)
         if not ok:
             return {
                 "fatal_error": f"git checkout {target_branch} failed: {err}",
@@ -5164,9 +5470,7 @@ async def commit_pr_node(state: dict, config: RunnableConfig) -> dict:
     # Stage + commit
     if has_uncommitted:
         await asyncio.to_thread(git_add_all, sandbox, repo_dir)
-        commit_result = await asyncio.to_thread(
-            git_commit, sandbox, repo_dir, commit_message
-        )
+        commit_result = await asyncio.to_thread(git_commit, sandbox, repo_dir, commit_message)
         if commit_result.exit_code != 0:
             logger.error("git commit failed: %s", commit_result.output)
             return {
@@ -5194,26 +5498,19 @@ async def commit_pr_node(state: dict, config: RunnableConfig) -> dict:
         if is_permanent_github_push_failure(push_output):
             return {
                 "fatal_error": (
-                    f"permanent push failure: token does not have write access. "
-                    f"{push_output}"
+                    f"permanent push failure: token does not have write access. {push_output}"
                 ),
                 "error_stage": "commit_pr",
             }
         return {
-            "messages": [
-                HumanMessage(
-                    content=f"[commit_pr] git push failed: {push_output}"
-                )
-            ],
+            "messages": [HumanMessage(content=f"[commit_pr] git push failed: {push_output}")],
             "pr_url": None,
             "pr_number": None,
         }
 
     # Resolve base + open PR
     try:
-        base_branch = await get_github_default_branch(
-            repo_owner, repo_name, installation_token
-        )
+        base_branch = await get_github_default_branch(repo_owner, repo_name, installation_token)
     except Exception:  # noqa: BLE001
         base_branch = "main"
 
@@ -5231,18 +5528,14 @@ async def commit_pr_node(state: dict, config: RunnableConfig) -> dict:
     except Exception as exc:  # noqa: BLE001
         logger.exception("Failed to create GitHub PR")
         return {
-            "messages": [
-                HumanMessage(content=f"[commit_pr] PR creation failed: {exc}")
-            ],
+            "messages": [HumanMessage(content=f"[commit_pr] PR creation failed: {exc}")],
             "pr_url": None,
             "pr_number": None,
         }
 
     if not pr_url:
         return {
-            "messages": [
-                HumanMessage(content="[commit_pr] PR creation returned no URL")
-            ],
+            "messages": [HumanMessage(content="[commit_pr] PR creation returned no URL")],
             "pr_url": None,
             "pr_number": None,
         }
@@ -5261,6 +5554,7 @@ FILE: agent\nodes\entry.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Entry node: validate config, resolve GitHub token, ensure sandbox exists."""
+
 from __future__ import annotations
 
 import asyncio
@@ -5300,9 +5594,7 @@ async def _check_or_recreate_sandbox(sandbox_backend: Any, thread_id: str) -> An
         await asyncio.to_thread(sandbox_backend.execute, "echo ok")
         return sandbox_backend
     except Exception as exc:  # noqa: BLE001
-        logger.warning(
-            "Cached sandbox unreachable for thread %s, recreating: %s", thread_id, exc
-        )
+        logger.warning("Cached sandbox unreachable for thread %s, recreating: %s", thread_id, exc)
         SANDBOX_BACKENDS.pop(thread_id, None)
         await _client.threads.update(
             thread_id=thread_id,
@@ -5312,9 +5604,7 @@ async def _check_or_recreate_sandbox(sandbox_backend: Any, thread_id: str) -> An
             new_backend = await asyncio.to_thread(create_sandbox)
         except Exception:
             logger.exception("Failed to recreate sandbox")
-            await _client.threads.update(
-                thread_id=thread_id, metadata={"sandbox_id": None}
-            )
+            await _client.threads.update(thread_id=thread_id, metadata={"sandbox_id": None})
             raise
         return new_backend
 
@@ -5373,18 +5663,14 @@ async def entry_node(state: dict, config: RunnableConfig) -> dict:
                 sandbox_backend = await asyncio.to_thread(create_sandbox)
             except Exception:
                 logger.exception("Failed to create sandbox")
-                await _client.threads.update(
-                    thread_id=thread_id, metadata={"sandbox_id": None}
-                )
+                await _client.threads.update(thread_id=thread_id, metadata={"sandbox_id": None})
                 raise
         else:
             logger.info("Connecting to existing sandbox %s", sandbox_id)
             try:
                 sandbox_backend = await asyncio.to_thread(create_sandbox, sandbox_id)
             except Exception:
-                logger.warning(
-                    "Failed to connect to existing sandbox %s, creating new", sandbox_id
-                )
+                logger.warning("Failed to connect to existing sandbox %s, creating new", sandbox_id)
                 await _client.threads.update(
                     thread_id=thread_id, metadata={"sandbox_id": SANDBOX_CREATING}
                 )
@@ -5392,9 +5678,7 @@ async def entry_node(state: dict, config: RunnableConfig) -> dict:
                     sandbox_backend = await asyncio.to_thread(create_sandbox)
                 except Exception:
                     logger.exception("Failed to create replacement sandbox")
-                    await _client.threads.update(
-                        thread_id=thread_id, metadata={"sandbox_id": None}
-                    )
+                    await _client.threads.update(thread_id=thread_id, metadata={"sandbox_id": None})
                     raise
             sandbox_backend = await _check_or_recreate_sandbox(sandbox_backend, thread_id)
     except Exception as exc:  # noqa: BLE001
@@ -5432,6 +5716,7 @@ FILE: agent\nodes\execute_step.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Execute step node: a narrow-scope mini deep agent for ONE todo item."""
+
 from __future__ import annotations
 
 import asyncio
@@ -5444,13 +5729,14 @@ from langchain_core.messages import HumanMessage
 from langgraph.graph.state import RunnableConfig
 
 from ..middleware import SanitizeToolInputsMiddleware, ToolErrorMiddleware
+from ..tools import fetch_url, http_request, web_search
 from ..utils.model import make_model
 from ..utils.preconditions import require_repo_cloned
 from ..utils.sandbox_state import get_sandbox_backend
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_EXECUTE_MODEL_ID = os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.1-70b-instruct")
+DEFAULT_EXECUTE_MODEL_ID = os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.3-70b-instruct")
 EXECUTE_RECURSION_LIMIT = 40
 
 
@@ -5525,33 +5811,74 @@ async def execute_step_node(state: dict, config: RunnableConfig) -> dict:
 
     files_hint = todo.get("files_likely_touched") or []
     files_str = ", ".join(files_hint) if files_hint else "(unknown â€” discover them)"
+    files_changed_so_far = list(state.get("files_changed_so_far") or [])
 
-    prompt = f"""You are implementing one specific task step in an already-cloned repository.
+    # Build detailed previous steps context
+    prev_steps_context = ""
+    if current_step > 0:
+        prev_steps = plan[:current_step]
+        prev_lines = ["Previous completed steps and their outcomes:"]
+        for i, prev in enumerate(prev_steps):
+            status = "COMPLETED" if prev.get("completed") else "DONE"
+            prev_lines.append(f"\n  Step {i + 1} [{status}]: {prev['description']}")
+            if prev.get("files_actually_changed"):
+                prev_lines.append(f"  Files changed: {', '.join(prev['files_actually_changed'])}")
+            if prev.get("outcome_summary"):
+                prev_lines.append(f"  Outcome: {prev['outcome_summary']}")
 
-Repository location: {repo_dir}
+        if files_changed_so_far:
+            prev_lines.append(
+                f"\nAll files modified so far in this task: {', '.join(files_changed_so_far)}"
+            )
+        prev_lines.append(
+            "\nIMPORTANT: Read the files listed above before writing any code "
+            "that depends on them. Their contents reflect ALL changes from previous steps."
+        )
+        prev_steps_context = "\n".join(prev_lines)
+
+    remaining_steps = plan[current_step + 1 :]
+    remaining_context = ""
+    if remaining_steps:
+        remaining_lines = [
+            "\nUpcoming steps after this one (for awareness only, do NOT implement them now):"
+        ]
+        for i, upcoming in enumerate(remaining_steps):
+            remaining_lines.append(f"  Step {current_step + i + 2}: {upcoming['description']}")
+        remaining_context = "\n".join(remaining_lines)
+
+    prompt = f"""You are a software engineer implementing one specific step of a larger task.
+The repository is already cloned at: {repo_dir}
 Branch: {branch_name}
 
 AGENTS.md rules (MANDATORY â€” follow these exactly):
 {agents_md}
 
-Your ONLY job right now:
+{prev_steps_context}
+
+YOUR CURRENT TASK (Step {current_step + 1} of {len(plan)}):
 {todo["description"]}
 
 Files likely involved: {files_str}
+{remaining_context}
 {retry_context}
-Rules:
-- Do NOT run linters or formatters. That happens automatically after you finish.
-- Do NOT run tests. That happens automatically after you finish.
-- Do NOT commit anything. That happens automatically after you finish.
-- Do NOT message anyone. That happens automatically after you finish.
-- Do NOT move on to other todo items. Only do the one task above.
-- When you are done, stop calling tools.
+
+HOW TO WORK:
+1. READ first â€” before writing any code, read all relevant files.
+   If previous steps changed files you depend on, read their CURRENT content.
+2. IMPLEMENT the change. Write clean minimal code matching existing style.
+3. VERIFY your own work â€” re-read changed files to confirm correctness.
+4. USE bash freely â€” you can run any command: grep, find, cat, python, npm, etc.
+5. USE web_search or fetch_url if you need docs, examples, or API references.
+6. STOP when this step is done. Do NOT implement other steps.
+   Do NOT run linters. Do NOT commit. Those happen automatically.
+
+You have full bash access. Use it. Read before you write.
 """
 
     agent = create_deep_agent(
         model=make_model(DEFAULT_EXECUTE_MODEL_ID, max_tokens=16_000),
         system_prompt=prompt,
-        tools=[],
+        tools=[web_search, fetch_url, http_request],
         backend=sandbox,
         middleware=[
             ToolErrorMiddleware(),
@@ -5563,11 +5890,7 @@ Rules:
 
     try:
         result = await agent.ainvoke(
-            {
-                "messages": [
-                    {"role": "user", "content": todo["description"]}
-                ]
-            },
+            {"messages": [{"role": "user", "content": todo["description"]}]},
             config=invoke_config,
         )
     except Exception as exc:  # noqa: BLE001
@@ -5594,18 +5917,30 @@ Rules:
         ", ".join(files_changed) or "(none)",
     )
 
+    # Update plan with per-step file tracking
+    updated_plan = list(plan)
+    updated_plan[current_step] = {
+        **todo,
+        "completed": True,
+        "files_actually_changed": files_changed,
+        "outcome_summary": f"Changed {len(files_changed)} file(s): {', '.join(files_changed) or 'none'}",
+    }
+
     summary_msg = HumanMessage(
         content=(
-            f"[execute_step #{current_step + 1}] "
-            f"Changed {len(files_changed)} file(s): "
-            f"{', '.join(files_changed) or '(none)'}"
+            f"[execute_step #{current_step + 1}/{len(plan)}] "
+            f"Completed: {todo['description'][:80]}. "
+            f"Files changed: {', '.join(files_changed) or '(none)'}"
         )
     )
 
     return {
         "messages": [*tail, summary_msg],
         "files_changed_so_far": accumulated,
+        "current_step": current_step + 1,  # advance step counter HERE not in verify
+        "plan": updated_plan,
     }
+
 
 
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -5613,13 +5948,14 @@ FILE: agent\nodes\notify.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Notify node: post final result to Slack/GitHub/Linear. Idempotent."""
+
 from __future__ import annotations
 
 import logging
 
 from langchain_core.messages import AnyMessage
 from langgraph.graph.state import RunnableConfig
-
+from ..utils.sandbox_state import evict_sandbox_backend
 from ..utils.github_app import get_github_app_installation_token
 from ..utils.github_comments import post_github_comment
 from ..utils.messages import extract_text_content
@@ -5652,7 +5988,32 @@ async def notify_node(state: dict, config: RunnableConfig) -> dict:
     if state.get("notification_sent"):
         return {}
 
-    source = state.get("source") or config.get("configurable", {}).get("source")
+    configurable = config.get("configurable", {}) if config else {}
+    source = state.get("source") or configurable.get("source")
+
+    # Send pending side-notification for unrelated mid-task messages
+    pending_notif = state.get("pending_user_notification")
+    if pending_notif and source:
+        try:
+            if source == "slack":
+                slack_thread = configurable.get("slack_thread") or {}
+                channel_id = slack_thread.get("channel_id")
+                thread_ts = slack_thread.get("thread_ts")
+                if channel_id and thread_ts:
+                    await post_slack_thread_reply(channel_id, thread_ts, pending_notif)
+            elif source == "github":
+                repo = state.get("repo") or configurable.get("repo") or {}
+                github_issue = configurable.get("github_issue") or {}
+                issue_number = state.get("pr_number") or github_issue.get("number")
+                if issue_number and repo.get("owner") and repo.get("name"):
+                    token = await get_github_app_installation_token()
+                    if token:
+                        await post_github_comment(
+                            repo, int(issue_number), pending_notif, token=token
+                        )
+        except Exception:
+            logger.exception("Failed to send pending user notification")
+
     fatal = state.get("fatal_error")
     pr_url = state.get("pr_url")
     verification_error = state.get("verification_error")
@@ -5661,27 +6022,22 @@ async def notify_node(state: dict, config: RunnableConfig) -> dict:
 
     # Compose message
     if fatal:
-        message = (
-            f"âŒ Task failed at stage `{state.get('error_stage') or 'unknown'}`:\n{fatal}"
-        )
+        message = f"âŒ Task failed at stage `{state.get('error_stage') or 'unknown'}`:\n{fatal}"
     elif pr_url:
         summary = _build_summary(state)
         message = f"âœ… Done! PR opened: {pr_url}"
         if summary:
             message = f"{message}\n\n{summary}"
     elif intent == "question":
-        answer = _last_assistant_text(messages)
-        message = answer or "Task completed."
+        answer = state.get("qa_answer") or _last_assistant_text(messages)
+        message = answer or "Task completed (no answer generated)."
     elif verification_error:
         attempts = state.get("verification_attempts", 0)
-        message = (
-            f"âš ï¸ Verification failed after {attempts} attempts:\n{verification_error}"
-        )
+        message = f"âš ï¸ Verification failed after {attempts} attempts:\n{verification_error}"
     else:
         message = "Task completed."
 
     # Route to correct notification channel
-    configurable = config.get("configurable", {}) if config else {}
     sent = False
 
     try:
@@ -5700,15 +6056,11 @@ async def notify_node(state: dict, config: RunnableConfig) -> dict:
             if issue_number and repo.get("owner") and repo.get("name"):
                 token = await get_github_app_installation_token()
                 if token:
-                    sent = await post_github_comment(
-                        repo, int(issue_number), message, token=token
-                    )
+                    sent = await post_github_comment(repo, int(issue_number), message, token=token)
                 else:
                     logger.error("No GitHub App token available for notify")
             else:
-                logger.warning(
-                    "GitHub source but missing issue_number or repo for notify"
-                )
+                logger.warning("GitHub source but missing issue_number or repo for notify")
         elif source == "linear":
             # No Linear notify implemented in current codebase; log only
             logger.info("Linear source notification (no-op): %s", message[:100])
@@ -5717,6 +6069,11 @@ async def notify_node(state: dict, config: RunnableConfig) -> dict:
             logger.info("Unknown source '%s' for notify; message=%s", source, message[:100])
     except Exception:  # noqa: BLE001
         logger.exception("notify_node failed to send message")
+
+    # Clean up sandbox from memory â€” thread is done
+    thread_id = state.get("thread_id") or (config or {}).get("configurable", {}).get("thread_id")
+    if thread_id:
+        evict_sandbox_backend(thread_id)
 
     return {"notification_sent": True if sent else False}
 
@@ -5727,11 +6084,13 @@ FILE: agent\nodes\plan.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Plan node: single LLM call to produce a structured plan for code_change tasks."""
+
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import re
 import shlex
 
 from langchain_core.messages import AnyMessage, HumanMessage
@@ -5745,7 +6104,7 @@ from ..utils.sandbox_state import get_sandbox_backend
 logger = logging.getLogger(__name__)
 
 DEFAULT_PLAN_MODEL_ID = os.environ.get(
-    "PLAN_MODEL_ID", os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.1-70b-instruct")
+    "PLAN_MODEL_ID", os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.3-70b-instruct")
 )
 
 MAX_PLAN_STEPS = 5
@@ -5764,9 +6123,7 @@ class PlanTodo(BaseModel):
 
 
 class PlanOutput(BaseModel):
-    todos: list[PlanTodo] = Field(
-        description=f"Ordered list of steps (max {MAX_PLAN_STEPS})."
-    )
+    todos: list[PlanTodo] = Field(description=f"Ordered list of steps (max {MAX_PLAN_STEPS}).")
     summary: str = Field(
         default="",
         description="One-sentence summary of the overall plan.",
@@ -5799,6 +6156,71 @@ async def _get_file_tree(sandbox, repo_dir: str) -> str:
     return result.output.strip()
 
 
+async def _get_relevant_file_contents(sandbox, repo_dir: str, task_text: str) -> str:
+    """Read a small amount of key file content to ground the plan.
+
+    Reads README / AGENTS docs and any source files whose names or contents
+    match identifiers extracted from the task description.
+    """
+    safe_dir = shlex.quote(repo_dir)
+    contents: list[str] = []
+
+    # --- 1. Read README.md / AGENTS.md ---
+    for readme in ["README.md", "AGENTS.md"]:
+        try:
+            result = await asyncio.to_thread(
+                sandbox.execute,
+                f"test -f {safe_dir}/{readme} && head -80 {safe_dir}/{readme}",
+            )
+            if result.exit_code == 0 and result.output.strip():
+                contents.append(f"=== {readme} (first 80 lines) ===\n{result.output.strip()}")
+        except Exception:  # noqa: BLE001
+            logger.debug("Could not read %s", readme, exc_info=True)
+
+    # --- 2. Grep for identifiers mentioned in the task description ---
+    identifiers = re.findall(r"\b([a-zA-Z_][a-zA-Z0-9_]{3,})\b", task_text)
+    # Deduplicate while preserving order, take first 5 unique
+    seen: set[str] = set()
+    unique_ids: list[str] = []
+    for ident in identifiers:
+        low = ident.lower()
+        if low not in seen:
+            seen.add(low)
+            unique_ids.append(ident)
+        if len(unique_ids) >= 5:
+            break
+
+    if unique_ids:
+        identifier_pattern = "|".join(unique_ids)
+        try:
+            grep_result = await asyncio.to_thread(
+                sandbox.execute,
+                f"cd {safe_dir} && grep -rEl --include='*.py' --include='*.ts' "
+                f"--include='*.tsx' --include='*.js' --include='*.go' "
+                f"--include='*.rs' --include='*.java' "
+                f"{shlex.quote(identifier_pattern)} . 2>/dev/null | head -5",
+            )
+            if grep_result.exit_code == 0 and grep_result.output.strip():
+                relevant_files = grep_result.output.strip().splitlines()[:3]
+                for rel_file in relevant_files:
+                    clean = rel_file.lstrip("./")
+                    try:
+                        read_result = await asyncio.to_thread(
+                            sandbox.execute,
+                            f"head -60 {safe_dir}/{shlex.quote(clean)}",
+                        )
+                        if read_result.exit_code == 0 and read_result.output.strip():
+                            contents.append(
+                                f"=== {clean} (first 60 lines) ===\n{read_result.output.strip()}"
+                            )
+                    except Exception:  # noqa: BLE001
+                        logger.debug("Could not read %s", clean, exc_info=True)
+        except Exception:  # noqa: BLE001
+            logger.debug("Grep for identifiers failed", exc_info=True)
+
+    return "\n\n".join(contents) if contents else "(no key files read)"
+
+
 async def plan_node(state: dict, config: RunnableConfig) -> dict:
     """Produce a structured plan. Peeks at the repo file tree first so
     files_likely_touched contains real paths instead of hallucinated ones."""
@@ -5809,16 +6231,42 @@ async def plan_node(state: dict, config: RunnableConfig) -> dict:
     messages = state.get("messages") or []
     user_message = _last_human_text(messages) or "(no user text)"
 
+    # Detect mid-task append mode
+    is_append_mode = "[mid-task instruction]" in user_message
+    existing_plan = state.get("plan") or []
+    completed_steps = [t for t in existing_plan if t.get("completed")]
+    pending_steps = [t for t in existing_plan if not t.get("completed")]
+    current_step = state.get("current_step", 0)
+
+    if is_append_mode:
+        append_context = f"""
+IMPORTANT: This is an APPEND operation. Do NOT recreate or modify these already-completed steps:
+{chr(10).join(f"  DONE - {t["description"]}" for t in completed_steps)}
+
+These steps are still pending and must be kept as-is:
+{chr(10).join(f"  PENDING - {t["description"]}" for t in pending_steps)}
+
+Generate ONLY the new steps needed to honor the new instruction.
+New steps must not redo what completed steps already did.
+Max {MAX_PLAN_STEPS - len(pending_steps)} new steps.
+"""
+    else:
+        append_context = ""
+
     # Get real file tree from sandbox so LLM uses actual paths
     file_tree = "(repo not available)"
     thread_id = state.get("thread_id") or config.get("configurable", {}).get("thread_id")
+    relevant_contents = "(repo not available)"
     if thread_id and state.get("repo_cloned"):
         try:
             sandbox = await get_sandbox_backend(thread_id)
             if sandbox:
                 file_tree = await _get_file_tree(sandbox, repo_dir)
+                relevant_contents = await _get_relevant_file_contents(
+                    sandbox, repo_dir, user_message
+                )
         except Exception:  # noqa: BLE001
-            logger.warning("Could not fetch file tree for planning", exc_info=True)
+            logger.warning("Could not fetch repo context for planning", exc_info=True)
 
     prompt = f"""You are planning a code change task. Produce a step-by-step plan.
 Each step should be independently completable.
@@ -5828,9 +6276,12 @@ Maximum {MAX_PLAN_STEPS} steps. If simpler, use fewer.
 Repository: {repo_dir}
 Branch: {branch_name}
 AGENTS.md rules: {agents_md}
-
+{append_context}
 Files in this repository (use these EXACT paths in files_likely_touched):
 {file_tree}
+
+Key file contents for context:
+{relevant_contents}
 
 Task: {user_message}
 
@@ -5838,6 +6289,7 @@ Produce a structured plan with todos and a brief summary.
 Only reference files that are actually listed above."""
 
     try:
+
         def _plan_sync():
             model = make_model(DEFAULT_PLAN_MODEL_ID, max_tokens=2048)
             structured = model.with_structured_output(PlanOutput)
@@ -5851,32 +6303,51 @@ Only reference files that are actually listed above."""
             "error_stage": "plan",
         }
 
-    todos = [
+    new_todos = [
         {
             "description": t.description,
             "files_likely_touched": t.files_likely_touched,
             "verification_strategy": t.verification_strategy,
             "completed": False,
+            "files_actually_changed": [],
+            "outcome_summary": "",
         }
         for t in result.todos[:MAX_PLAN_STEPS]
     ]
 
-    if not todos:
+    if not new_todos:
         return {
             "fatal_error": "Planning produced zero steps",
             "error_stage": "plan",
         }
 
-    logger.info(
-        "plan_node produced %d step(s); summary=%s", len(todos), result.summary
-    )
+    if is_append_mode:
+        merged_plan = existing_plan + new_todos
+        logger.info(
+            "Appended %d new step(s) to existing plan. Total: %d", len(new_todos), len(merged_plan)
+        )
+        summary_message = HumanMessage(
+            content=(
+                f"[plan] Appended {len(new_todos)} new step(s) to honor new instruction. "
+                f"Resuming from step {current_step + 1}."
+            )
+        )
+        return {
+            "plan": merged_plan,
+            "verification_attempts": 0,
+            "verification_error": None,
+            "lint_passed": None,
+            "tests_passed": None,
+            "messages": [summary_message],
+            # DO NOT reset current_step or files_changed_so_far in append mode
+        }
 
+    # Normal new-task mode
     summary_message = HumanMessage(
-        content=f"[plan] {result.summary or 'Plan generated'} ({len(todos)} step(s))."
+        content=f"[plan] {result.summary or 'Plan generated'} ({len(new_todos)} step(s))."
     )
-
     return {
-        "plan": todos,
+        "plan": new_todos,
         "current_step": 0,
         "verification_attempts": 0,
         "verification_error": None,
@@ -5887,11 +6358,13 @@ Only reference files that are actually listed above."""
     }
 
 
+
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 FILE: agent\nodes\review_pr.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Review PR node: mini deep agent for addressing PR review comments."""
+
 from __future__ import annotations
 
 import logging
@@ -5913,7 +6386,7 @@ from ..utils.sandbox_state import get_sandbox_backend
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_REVIEW_MODEL_ID = os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.1-70b-instruct")
+DEFAULT_REVIEW_MODEL_ID = os.environ.get("LLM_MODEL_ID", "nvidia:meta/llama-3.3-70b-instruct")
 REVIEW_RECURSION_LIMIT = 40
 
 
@@ -6016,6 +6489,7 @@ FILE: agent\nodes\setup_repo.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Setup repo node: clone repo, checkout branch, read AGENTS.md. Pure Python."""
+
 from __future__ import annotations
 
 import asyncio
@@ -6096,11 +6570,23 @@ async def setup_repo_node(state: dict, config: RunnableConfig) -> dict:
     safe_repo_dir = shlex.quote(repo_dir)
 
     # Determine branch name
-    branch_name = (
-        config.get("metadata", {}).get("branch_name")
-        if isinstance(config.get("metadata"), dict)
-        else None
-    )
+    from langgraph_sdk import get_client as _get_client
+
+    async def _get_branch_from_thread(tid: str) -> str | None:
+        try:
+            _client = _get_client()
+            thread = await _client.threads.get(tid)
+            return (thread.get("metadata") or {}).get("branch_name")
+        except Exception:
+            return None
+
+    branch_name = await _get_branch_from_thread(thread_id)
+    if not branch_name:
+        branch_name = (
+            config.get("metadata", {}).get("branch_name")
+            if isinstance(config.get("metadata"), dict)
+            else None
+        )
     if not branch_name:
         try:
             branch_name = await get_github_default_branch(owner, name, github_token)
@@ -6109,9 +6595,7 @@ async def setup_repo_node(state: dict, config: RunnableConfig) -> dict:
             branch_name = "main"
 
     # Check if repo already cloned
-    check_result = await asyncio.to_thread(
-        sandbox.execute, f"test -d {safe_repo_dir}/.git"
-    )
+    check_result = await asyncio.to_thread(sandbox.execute, f"test -d {safe_repo_dir}/.git")
 
     if check_result.exit_code == 0:
         # Already cloned â€” fetch latest
@@ -6121,14 +6605,10 @@ async def setup_repo_node(state: dict, config: RunnableConfig) -> dict:
             f"cd {safe_repo_dir} && git fetch origin 2>&1",
         )
         if fetch_result.exit_code != 0:
-            logger.warning(
-                "git fetch failed (continuing anyway): %s", fetch_result.output
-            )
+            logger.warning("git fetch failed (continuing anyway): %s", fetch_result.output)
     else:
         # Fresh clone
-        clone_url = (
-            f"https://x-access-token:{github_token}@github.com/{owner}/{name}.git"
-        )
+        clone_url = f"https://x-access-token:{github_token}@github.com/{owner}/{name}.git"
         safe_clone_url = shlex.quote(clone_url)
         clone_cmd = f"git clone {safe_clone_url} {safe_repo_dir} 2>&1"
         logger.info("Cloning %s/%s into %s", owner, name, repo_dir)
@@ -6156,8 +6636,7 @@ async def setup_repo_node(state: dict, config: RunnableConfig) -> dict:
         if create_result.exit_code != 0:
             return {
                 "fatal_error": (
-                    f"git checkout failed for branch {branch_name}: "
-                    f"{create_result.output}"
+                    f"git checkout failed for branch {branch_name}: {create_result.output}"
                 ),
                 "error_stage": "setup_repo",
                 "repo_cloned": False,
@@ -6175,13 +6654,9 @@ async def setup_repo_node(state: dict, config: RunnableConfig) -> dict:
     agents_md_content: str | None = None
     agents_md_path = f"{repo_dir}/AGENTS.md"
     safe_agents_path = shlex.quote(agents_md_path)
-    agents_check = await asyncio.to_thread(
-        sandbox.execute, f"test -f {safe_agents_path}"
-    )
+    agents_check = await asyncio.to_thread(sandbox.execute, f"test -f {safe_agents_path}")
     if agents_check.exit_code == 0:
-        cat_result = await asyncio.to_thread(
-            sandbox.execute, f"cat {safe_agents_path}"
-        )
+        cat_result = await asyncio.to_thread(sandbox.execute, f"cat {safe_agents_path}")
         if cat_result.exit_code == 0:
             agents_md_content = cat_result.output
             logger.info("Read AGENTS.md (%d chars)", len(agents_md_content or ""))
@@ -6198,7 +6673,7 @@ async def setup_repo_node(state: dict, config: RunnableConfig) -> dict:
         "repo_dir": repo_dir,
         "branch_name": branch_name,
         "agents_md_content": agents_md_content,
-        "files_changed_so_far": [],   # ADD â€” reset on each fresh setup
+        "files_changed_so_far": [],  # ADD â€” reset on each fresh setup
     }
 
 
@@ -6208,10 +6683,12 @@ FILE: agent\nodes\verify.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Verify node: run formatters/linters on changed files only."""
+
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import shlex
 
 from langgraph.graph.state import RunnableConfig
@@ -6263,13 +6740,13 @@ async def verify_node(state: dict, config: RunnableConfig) -> dict:
 
     # Nothing changed â€” agent may have done a read-only step; advance and continue
     if not files_changed:
-        logger.info("No files changed; skipping verification, advancing step counter")
+        logger.info("No files changed; skipping verification")
         return {
             "lint_passed": True,
             "tests_passed": True,
             "verification_attempts": 0,
             "verification_error": None,
-            "current_step": current_step + 1,
+            # No current_step increment â€” step management is now in execute_step
         }
 
     has_python = any(f.endswith(".py") for f in files_changed)
@@ -6277,13 +6754,19 @@ async def verify_node(state: dict, config: RunnableConfig) -> dict:
 
     errors: list[str] = []
 
+    # --- Log verification_strategy from the plan for this step ---
+    plan = state.get("plan") or []
+    # current_step points to the step that just executed (not yet advanced)
+    if 0 <= current_step < len(plan):
+        strategy = plan[current_step].get("verification_strategy", "")
+        if strategy and strategy.strip().lower() not in ("", "none", "lint"):
+            logger.info("Step %d verification strategy from plan: %s", current_step, strategy)
+
     # Python: try ruff directly first, then fall back to make lint
     if has_python:
         ruff_available = await _run(sandbox, "command -v ruff", timeout=10)
         if ruff_available.exit_code == 0:
-            safe_files = " ".join(
-                shlex.quote(f) for f in files_changed if f.endswith(".py")
-            )
+            safe_files = " ".join(shlex.quote(f) for f in files_changed if f.endswith(".py"))
             result = await _run(
                 sandbox,
                 f"cd {safe_dir} && ruff check {safe_files}",
@@ -6293,27 +6776,64 @@ async def verify_node(state: dict, config: RunnableConfig) -> dict:
                 errors.append(f"ruff check failed:\n{result.output}")
         else:
             # Fall back to Makefile
-            makefile_exists = await _run(
-                sandbox, f"test -f {safe_dir}/Makefile", timeout=5
-            )
+            makefile_exists = await _run(sandbox, f"test -f {safe_dir}/Makefile", timeout=5)
             if makefile_exists.exit_code == 0:
-                result = await _run(
-                    sandbox, f"cd {safe_dir} && make lint", timeout=120
-                )
+                result = await _run(sandbox, f"cd {safe_dir} && make lint", timeout=120)
                 if result.exit_code != 0:
                     errors.append(f"make lint failed:\n{result.output}")
 
     # JS/TS: yarn lint
     if has_js_ts:
-        pkg_exists = await _run(
-            sandbox, f"test -f {safe_dir}/package.json", timeout=5
-        )
+        pkg_exists = await _run(sandbox, f"test -f {safe_dir}/package.json", timeout=5)
         if pkg_exists.exit_code == 0:
-            result = await _run(
-                sandbox, f"cd {safe_dir} && yarn lint", timeout=180
-            )
+            result = await _run(sandbox, f"cd {safe_dir} && yarn lint", timeout=180)
             if result.exit_code != 0:
                 errors.append(f"yarn lint failed:\n{result.output}")
+
+    # --- Run tests for changed Python files ---
+    if has_python:
+        # Also run test files that were directly modified
+        test_files_direct = [
+            f
+            for f in files_changed
+            if f.endswith(".py")
+            and (
+                os.path.basename(f).startswith("test_") or os.path.basename(f).endswith("_test.py")
+            )
+        ]
+
+        test_files: list[str] = []
+        for f in files_changed:
+            if not f.endswith(".py"):
+                continue
+            basename_no_ext = os.path.basename(f).replace(".py", "")
+            # Skip files that are themselves tests
+            if basename_no_ext.startswith("test_") or basename_no_ext.endswith("_test"):
+                continue
+            # Common patterns: test_foo.py, foo_test.py, tests/test_foo.py
+            test_find = await _run(
+                sandbox,
+                f"find {safe_dir} -name 'test_{basename_no_ext}.py' "
+                f"-o -name '{basename_no_ext}_test.py' 2>/dev/null | head -3",
+                timeout=10,
+            )
+            if test_find.exit_code == 0 and test_find.output.strip():
+                test_files.extend(test_find.output.strip().splitlines())
+
+        all_test_files = test_files_direct + test_files
+        if all_test_files:
+            # Deduplicate and limit to 3 test files to keep runtime bounded
+            unique_tests = list(dict.fromkeys(t.strip() for t in all_test_files))[:3]
+            safe_test_files = " ".join(shlex.quote(t) for t in unique_tests)
+            logger.info("Running related test files: %s", unique_tests)
+            test_run = await _run(
+                sandbox,
+                f"cd {safe_dir} && python -m pytest {safe_test_files} -x -q "
+                f"--no-header 2>&1 | tail -30",
+                timeout=120,
+            )
+            if test_run.exit_code != 0:
+                errors.append(f"Related tests failed:\n{test_run.output}")
 
     if errors:
         combined = "\n\n".join(errors)
@@ -6334,9 +6854,10 @@ async def verify_node(state: dict, config: RunnableConfig) -> dict:
         "tests_passed": True,
         "verification_attempts": 0,
         "verification_error": None,
-        "current_step": current_step + 1,
-        "files_changed_so_far": [],
+        # current_step is NOT incremented here â€” execute_step does it
+        # files_changed_so_far is NOT reset here â€” commit_pr does it
     }
+
 
 
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -6344,6 +6865,7 @@ FILE: agent\nodes\__init__.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Graph nodes for the Native-SWE state machine."""
+
 from .answer_qa import answer_qa_node
 from .check_queue import check_queue_node
 from .classify import classify_node
@@ -9919,13 +10441,14 @@ def make_model(model_id: str, **kwargs: Unpack[ModelKwargs]):
 
         # Configure max_tokens, temperature according to project
         temp = model_kwargs.get("temperature", 0.2)
-        max_tokens = model_kwargs.get("max_tokens", 2048)
+        max_tokens = model_kwargs.get("max_tokens", 4096)
+        
+        # Cap at 4096 since NVIDIA NIM endpoints generally reject max_tokens > 4096
+        if max_tokens and max_tokens > 4096:
+            max_tokens = 4096
 
         return ChatNVIDIA(
-            model=nvidia_model,
-            api_key=api_key,
-            temperature=temp,
-            max_tokens=max_tokens
+            model=nvidia_model, api_key=api_key, temperature=temp, max_tokens=max_tokens
         )
 
     if model_id.startswith("openai:"):
@@ -10051,6 +10574,7 @@ FILE: agent\utils\preconditions.py
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
 
 """Shared preconditions for graph nodes."""
+
 from __future__ import annotations
 
 import asyncio
@@ -10075,9 +10599,7 @@ async def require_repo_cloned(state: dict, sandbox: Any) -> str | None:
         return "repo_dir missing from state"
 
     try:
-        check = await asyncio.to_thread(
-            sandbox.execute, f"test -d {shlex.quote(repo_dir)}/.git"
-        )
+        check = await asyncio.to_thread(sandbox.execute, f"test -d {shlex.quote(repo_dir)}/.git")
         if check.exit_code != 0:
             return f"repo dir {repo_dir} no longer exists or is not a git repo"
     except Exception as exc:  # noqa: BLE001
@@ -10127,6 +10649,7 @@ async def get_diff_stat(sandbox: Any, repo_dir: str) -> str:
     if result.exit_code != 0:
         return ""
     return result.output.strip()
+
 
 
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
@@ -10381,6 +10904,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from collections import OrderedDict
 from typing import Any
 
 from langgraph.config import get_config
@@ -10389,8 +10914,57 @@ from .sandbox import create_sandbox
 
 logger = logging.getLogger(__name__)
 
-# Thread ID -> SandboxBackend mapping, shared between server.py and middleware
-SANDBOX_BACKENDS: dict[str, Any] = {}
+# Max sandboxes to keep in memory at once (LRU eviction after this)
+_MAX_SANDBOX_BACKENDS = 50
+
+# Evict sandboxes not accessed for more than 2 hours
+_SANDBOX_TTL_SECONDS = 7200
+
+# Thread ID -> SandboxBackend (OrderedDict for LRU ordering)
+SANDBOX_BACKENDS: OrderedDict[str, Any] = OrderedDict()
+
+# Thread ID -> last access timestamp
+_SANDBOX_LAST_ACCESS: dict[str, float] = {}
+
+
+def _touch(thread_id: str) -> None:
+    """Update last-access time and move to end (most recently used)."""
+    _SANDBOX_LAST_ACCESS[thread_id] = time.monotonic()
+    if thread_id in SANDBOX_BACKENDS:
+        SANDBOX_BACKENDS.move_to_end(thread_id)
+
+
+def evict_sandbox_backend(thread_id: str) -> None:
+    """Explicitly remove a sandbox from the cache (call on thread completion)."""
+    removed = SANDBOX_BACKENDS.pop(thread_id, None)
+    _SANDBOX_LAST_ACCESS.pop(thread_id, None)
+    if removed is not None:
+        logger.info("Evicted sandbox backend for thread %s", thread_id)
+
+
+def evict_stale_sandbox_backends() -> None:
+    """Remove sandboxes idle longer than _SANDBOX_TTL_SECONDS, then enforce max size."""
+    now = time.monotonic()
+
+    # TTL eviction
+    stale = [
+        tid for tid, last in _SANDBOX_LAST_ACCESS.items()
+        if now - last > _SANDBOX_TTL_SECONDS
+    ]
+    for tid in stale:
+        evict_sandbox_backend(tid)
+    if stale:
+        logger.info("TTL-evicted %d stale sandbox(es)", len(stale))
+
+    # LRU cap: evict oldest entries if over the limit
+    while len(SANDBOX_BACKENDS) > _MAX_SANDBOX_BACKENDS:
+        oldest_tid, _ = next(iter(SANDBOX_BACKENDS.items()))
+        evict_sandbox_backend(oldest_tid)
+        logger.warning(
+            "LRU cap reached (%d), evicted oldest sandbox: %s",
+            _MAX_SANDBOX_BACKENDS,
+            oldest_tid,
+        )
 
 
 async def get_sandbox_id_from_metadata(thread_id: str) -> str | None:
@@ -10405,8 +10979,12 @@ async def get_sandbox_id_from_metadata(thread_id: str) -> str | None:
 
 async def get_sandbox_backend(thread_id: str) -> Any | None:
     """Get sandbox backend from cache, or connect using thread metadata."""
+    # Evict stale entries on every access (cheap check)
+    evict_stale_sandbox_backends()
+
     sandbox_backend = SANDBOX_BACKENDS.get(thread_id)
     if sandbox_backend:
+        _touch(thread_id)
         return sandbox_backend
 
     sandbox_id = await get_sandbox_id_from_metadata(thread_id)
@@ -10414,14 +10992,15 @@ async def get_sandbox_backend(thread_id: str) -> Any | None:
         raise ValueError(f"Missing sandbox_id in thread metadata for {thread_id}")
 
     sandbox_backend = await asyncio.to_thread(create_sandbox, sandbox_id)
+
     SANDBOX_BACKENDS[thread_id] = sandbox_backend
+    _touch(thread_id)
     return sandbox_backend
 
 
 def get_sandbox_backend_sync(thread_id: str) -> Any | None:
     """Sync wrapper for get_sandbox_backend."""
     return asyncio.run(get_sandbox_backend(thread_id))
-
 
 
 ++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++

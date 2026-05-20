@@ -14,6 +14,10 @@ from .logging_config import setup_logging
 setup_logging()
 
 import httpx
+import nest_asyncio
+
+nest_asyncio.apply()
+
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from langchain_core.messages.content import create_text_block
 from langgraph_sdk import get_client
@@ -861,7 +865,6 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
         "name": repo.get("name", ""),
     }
 
-
     issue_id = str(issue.get("id", ""))
     issue_number = issue.get("number")
     github_login = payload.get("sender", {}).get("login", "")
@@ -982,8 +985,10 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
             "files_changed_so_far": [],
             "fatal_error": None,
         },
-        config={"configurable": {**configurable, "thread_id": thread_id},
-                "metadata": _AGENT_VERSION_METADATA},
+        config={
+            "configurable": {**configurable, "thread_id": thread_id},
+            "metadata": _AGENT_VERSION_METADATA,
+        },
         if_not_exists="create",
     )
     logger.info("LangGraph run created for thread %s from GitHub issue", thread_id)
@@ -993,7 +998,6 @@ async def process_github_issue(payload: dict[str, Any], event_type: str) -> None
 async def github_webhook(request: Request, background_tasks: BackgroundTasks) -> dict[str, str]:
     """Handle GitHub webhooks for issue and PR events that tag @native-swe."""
     body = await request.body()
-
 
     signature = request.headers.get("X-Hub-Signature-256", "")
     if not verify_github_signature(body, signature, secret=GITHUB_WEBHOOK_SECRET):
@@ -1036,7 +1040,6 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks) ->
             logger.info("Ignoring unsupported GitHub issue action: %s", action)
             return {"status": "ignored", "reason": f"Unsupported GitHub issue action: {action}"}
         if action == "edited":
-
             changes = payload.get("changes", {})
             if not any(field in changes for field in ("body", "title")):
                 logger.info("Ignoring GitHub issue edit without title/body changes")
@@ -1071,3 +1074,97 @@ async def github_webhook(request: Request, background_tasks: BackgroundTasks) ->
 
     logger.info("Ignoring unsupported GitHub payload shape for event=%s", event_type)
     return {"status": "ignored", "reason": f"Unsupported payload for event type: {event_type}"}
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    validate_sandbox_startup_config()
+    await _cleanup_stuck_threads()
+    yield
+
+
+async def _cleanup_stuck_threads() -> None:
+    """On startup, cancel any runs left over from the previous session."""
+    try:
+        _client = get_client(url=LANGGRAPH_URL)
+        busy_threads = await _client.threads.search(status="busy", limit=100)
+
+        if not busy_threads:
+            logger.info("No stuck threads found on startup")
+            return
+
+        logger.warning("Found %d stuck thread(s) on startup, cleaning up", len(busy_threads))
+
+        for thread in busy_threads:
+            tid = thread.get("thread_id") or thread.get("id")
+            if not tid:
+                continue
+            try:
+                # Get all runs for this thread
+                runs = await _client.runs.list(tid, limit=10)
+                for run in runs:
+                    run_id = run.get("run_id") or run.get("id")
+                    run_status = run.get("status")
+                    # Cancel any run that's in a non-terminal state
+                    if run_status in ("pending", "running", "error"):
+                        await _client.runs.cancel(tid, run_id, wait=False)
+                        logger.info("Cancelled orphaned run %s on thread %s", run_id, tid)
+            except Exception:
+                logger.warning("Failed to cancel runs for thread %s", tid, exc_info=True)
+
+    except Exception:
+        logger.exception("Startup thread cleanup failed")
+
+
+# import asyncio
+
+# async def _periodic_thread_cleanup(interval_seconds: int = 300) -> None:
+#     """Every 5 minutes, cancel runs stuck longer than 30 minutes."""
+#     while True:
+#         await asyncio.sleep(interval_seconds)
+#         try:
+#             _client = get_client(url=LANGGRAPH_URL)
+#             busy_threads = await _client.threads.search(status="busy", limit=100)
+#             now = datetime.now(UTC)
+
+#             for thread in busy_threads:
+#                 tid = thread.get("thread_id") or thread.get("id")
+#                 updated_at = thread.get("updated_at")
+#                 if not tid or not updated_at:
+#                     continue
+
+#                 # Parse updated_at
+#                 if isinstance(updated_at, str):
+#                     updated_dt = datetime.fromisoformat(
+#                         updated_at.replace("Z", "+00:00")
+#                     )
+#                 else:
+#                     continue
+
+#                 age_minutes = (now - updated_dt).total_seconds() / 60
+#                 if age_minutes > 30:
+#                     logger.warning(
+#                         "Thread %s stuck busy for %.0f min, cancelling runs",
+#                         tid, age_minutes
+#                     )
+#                     try:
+#                         runs = await _client.runs.list(tid, limit=5)
+#                         for run in runs:
+#                             run_id = run.get("run_id") or run.get("id")
+#                             if run.get("status") in ("pending", "running"):
+#                                 await _client.runs.cancel(tid, run_id, wait=False)
+#                     except Exception:
+#                         logger.warning("Failed cleanup for thread %s", tid, exc_info=True)
+
+#         except Exception:
+#             logger.exception("Periodic thread cleanup failed")
+
+
+# @asynccontextmanager
+# async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+#     validate_sandbox_startup_config()
+#     await _cleanup_stuck_threads()
+    
+#     # Start background cleanup task
+#     cleanup_task = asyncio.create_task(_periodic_thread_cleanup())
+#     yield
+#     cleanup_task.cancel()

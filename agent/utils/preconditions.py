@@ -1,4 +1,5 @@
 """Shared preconditions for graph nodes."""
+
 from __future__ import annotations
 
 import asyncio
@@ -23,9 +24,7 @@ async def require_repo_cloned(state: dict, sandbox: Any) -> str | None:
         return "repo_dir missing from state"
 
     try:
-        check = await asyncio.to_thread(
-            sandbox.execute, f"test -d {shlex.quote(repo_dir)}/.git"
-        )
+        check = await asyncio.to_thread(sandbox.execute, f"test -d {shlex.quote(repo_dir)}/.git")
         if check.exit_code != 0:
             return f"repo dir {repo_dir} no longer exists or is not a git repo"
     except Exception as exc:  # noqa: BLE001

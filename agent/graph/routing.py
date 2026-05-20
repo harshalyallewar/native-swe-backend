@@ -1,4 +1,5 @@
 """Routing functions for the Native-SWE state graph."""
+
 from __future__ import annotations
 
 from .state import AgentState
@@ -25,22 +26,24 @@ def route_after_plan(state: AgentState) -> str:
     return "error" if state.get("fatal_error") else "continue"
 
 
-
-
-
 def route_after_verify(state: AgentState) -> str:
+    """
+    After verify:
+    - passed → commit_pr
+    - failed but attempts remaining → re-run execute_step for fix
+    - exhausted → notify
+    """
     if state.get("lint_passed") and state.get("tests_passed"):
-        current_step = state.get("current_step", 0)
-        plan = state.get("plan") or []
-        if current_step < len(plan):
-            return "next_step"
-        return "passed"
+        return "passed"  # → commit_pr
+
     attempts = state.get("verification_attempts", 0)
     if attempts >= MAX_VERIFICATION_ATTEMPTS:
         return "exhausted"
+
     if state.get("intent") == "review":
         return "retry_review"
-    return "retry"
+
+    return "retry"  # → execute_step to fix errors
 
 
 def route_after_commit_pr(state: AgentState) -> str:

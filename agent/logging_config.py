@@ -33,9 +33,7 @@ LOG_FILENAME = os.environ.get("LOG_FILENAME", "native_swe.log")
 _MAX_BYTES = 10 * 1024 * 1024
 _BACKUP_COUNT = 5
 
-_LOG_FORMAT = (
-    "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s"
-)
+_LOG_FORMAT = "%(asctime)s | %(levelname)-8s | %(name)s:%(funcName)s:%(lineno)d | %(message)s"
 _DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
 

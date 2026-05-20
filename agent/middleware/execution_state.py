@@ -2,6 +2,7 @@
 # architecture. Workspace validation is now handled by require_repo_cloned()
 # in each graph node. Kept for reference only — do not import in new code.
 import logging
+import shlex
 from collections.abc import Awaitable, Callable
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState
@@ -10,16 +11,15 @@ from langgraph.config import get_config
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
-logger = logging.getLogger(__name__)
-
-import shlex
-
 from ..utils.sandbox_paths import aresolve_repo_dir
 from ..utils.sandbox_state import get_sandbox_backend
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutionStateMiddleware(AgentMiddleware):
     """Validates workspace state to ensure repository is cloned."""
+
     state_schema = AgentState
 
     async def _validate_workspace(self, tool_name: str, command: str) -> str | None:

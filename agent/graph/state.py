@@ -16,6 +16,8 @@ class TodoItem(TypedDict):
     files_likely_touched: list[str]
     verification_strategy: str
     completed: bool
+    files_actually_changed: list[str]  # populated by execute_step
+    outcome_summary: str  # populated by execute_step
 
 
 class AgentState(TypedDict):
@@ -60,6 +62,9 @@ class AgentState(TypedDict):
 
     # ── set by notify node ───────────────────────────────────
     notification_sent: bool
+
+    qa_answer: str | None  # explicit answer from answer_qa node
+    pending_user_notification: str | None  # side message to send to user
 
     # ── error handling ───────────────────────────────────────
     fatal_error: str | None
