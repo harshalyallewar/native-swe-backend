@@ -143,6 +143,7 @@ This is an area where you can extend Native-SWE for your org: add deterministic 
 
 - **[Installation Guide](INSTALLATION.md)** — GitHub App creation, LangSmith, Linear/Slack/GitHub triggers, and production deployment
 - **[Customization Guide](CUSTOMIZATION.md)** — swap the sandbox, model, tools, triggers, system prompt, and middleware for your org
+- **[Web Search](WEB_SEARCH.md)** — free anonymous Parallel search, existing Exa setup, provider overrides, and disabling search
 
 ## License
 
